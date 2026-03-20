@@ -110,6 +110,40 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
     """
     logger.debug("[%s] Incoming text: %r", phone_number, text)
 
+    # Handle /info command — send bot instructions and stop
+    if text.strip().lower() == "/info":
+        settings = get_settings()
+        normalized = _normalize_phone(phone_number)
+        connect_url = f"{settings.app_base_url.rstrip('/')}/connect/fatsecret?phone_number={normalized}"
+        await send_text_message(
+            phone_number,
+            "📖 *CalorieBot — How It Works*\n\n"
+            "*Logging meals*\n"
+            "Just tell me what you ate in plain text or send a voice note:\n"
+            "  • \"2 eggs and toast\"\n"
+            "  • \"100g chicken breast with rice\"\n"
+            "I'll look up the nutrition data and log it to your diary.\n\n"
+            "*Daily summary*\n"
+            "Ask for your totals any time:\n"
+            "  • \"What's my total today?\"\n"
+            "  • \"Show me today's summary\"\n\n"
+            "*Reminders*\n"
+            "Set meal reminders in natural language:\n"
+            "  • \"Remind me every day at 8pm to log dinner\"\n\n"
+            "*Commands*\n"
+            "  • /connect — link your FatSecret account\n"
+            "  • /info — show this message\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "*Connecting FatSecret (optional)*\n"
+            "FatSecret gives you accurate nutrition data from a real food database instead of AI estimates.\n\n"
+            f"Link your account: {connect_url}\n\n"
+            "⚠️ *Important:* On the FatSecret page you must *log in* with email + password.\n"
+            "Do *not* use \"Sign in with Google\" — it won't redirect back to the bot.\n\n"
+            "No FatSecret account yet? Create one at fatsecret.com first (use email, not Google), "
+            "then tap the link above.",
+        )
+        return
+
     # Handle /connect command — send OAuth link and stop, no food logging
     if text.strip().lower() == "/connect":
         settings = get_settings()
