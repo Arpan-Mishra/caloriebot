@@ -138,15 +138,23 @@ async def connect_fatsecret_callback(
     db.delete(temp)
     db.commit()
 
-    access_token, access_secret = get_access_token(oauth_token, oauth_token_secret, oauth_verifier)
+    try:
+        access_token, access_secret = get_access_token(oauth_token, oauth_token_secret, oauth_verifier)
+    except Exception:
+        logger.exception("FatSecret token exchange failed for phone_number=%s", phone_number)
+        raise HTTPException(status_code=502, detail="FatSecret OAuth exchange failed. Please try connecting again.")
+
     user.fatsecret_access_token = access_token
     user.fatsecret_access_secret = access_secret
     db.commit()
     logger.info("FatSecret tokens stored for phone_number=%s", phone_number)
 
-    await send_text_message(
-        phone_number,
-        "✅ FatSecret connected! Your account is now linked.\n\nGoing forward I'll log all your meals directly to your FatSecret diary with accurate nutrition data. Just tell me what you ate!",
-    )
+    try:
+        await send_text_message(
+            phone_number,
+            "✅ FatSecret connected! Your account is now linked.\n\nGoing forward I'll log all your meals directly to your FatSecret diary with accurate nutrition data. Just tell me what you ate!",
+        )
+    except Exception:
+        logger.exception("Failed to send FatSecret connected WhatsApp message to %s", phone_number)
 
     return {"status": "connected", "message": "FatSecret account linked successfully! You can close this tab and return to WhatsApp."}
