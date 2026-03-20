@@ -26,7 +26,9 @@ logging.config.dictConfig({
 from app.database import init_db, get_db, SessionLocal
 from app.handlers.webhook import route_webhook
 from app.services.scheduler import start_scheduler, shutdown_scheduler
+from app.services.whatsapp import send_text_message
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -140,5 +142,11 @@ async def connect_fatsecret_callback(
     user.fatsecret_access_token = access_token
     user.fatsecret_access_secret = access_secret
     db.commit()
+    logger.info("FatSecret tokens stored for phone_number=%s", phone_number)
+
+    await send_text_message(
+        phone_number,
+        "✅ FatSecret connected! Your account is now linked.\n\nGoing forward I'll log all your meals directly to your FatSecret diary with accurate nutrition data. Just tell me what you ate!",
+    )
 
     return {"status": "connected", "message": "FatSecret account linked successfully! You can close this tab and return to WhatsApp."}
