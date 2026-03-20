@@ -110,6 +110,17 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
     """
     logger.debug("[%s] Incoming text: %r", phone_number, text)
 
+    # Handle /connect command — send OAuth link and stop, no food logging
+    if text.strip().lower() == "/connect":
+        settings = get_settings()
+        normalized = _normalize_phone(phone_number)
+        connect_url = f"{settings.app_base_url.rstrip('/')}/connect/fatsecret?phone_number={normalized}"
+        await send_text_message(
+            phone_number,
+            f"Tap this link to connect your FatSecret account:\n{connect_url}",
+        )
+        return
+
     user, is_new = _get_or_create_user(db, phone_number)
     _get_or_create_state(db, user)
 
@@ -153,6 +164,10 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
     # Food logging via the nutrition agent
     meal_type = _infer_meal_type()
     logger.debug("[%s] Inferred meal_type=%r from time", phone_number, meal_type)
+
+    # Reload user from DB to pick up any FatSecret tokens that were added
+    # while a voice note was being transcribed (race condition).
+    db.refresh(user)
 
     try:
         reply = await nutrition_agent.run_nutrition_agent(text, user, meal_type, db)
