@@ -64,6 +64,11 @@ Answer with ONLY "yes" or "no".
 
 Message: {user_message}"""
 
+IS_DELETE_PROMPT = """Does this message ask to delete, clear, remove, or undo food diary entries for a specific meal (breakfast, lunch, dinner, snack) or for the whole day?
+Answer with ONLY "yes" or "no". Answer "no" for unrelated deletion requests.
+
+Message: {user_message}"""
+
 
 def _get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -156,6 +161,18 @@ def is_summary_request(user_message: str) -> bool:
     """Detect if the user is asking for a daily summary."""
     client = _get_client()
     prompt = IS_SUMMARY_PROMPT.format(user_message=user_message)
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=10,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text.strip().lower() == "yes"
+
+
+def is_delete_request(user_message: str) -> bool:
+    """Detect if the user is asking to delete/clear meal diary entries."""
+    client = _get_client()
+    prompt = IS_DELETE_PROMPT.format(user_message=user_message)
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=10,

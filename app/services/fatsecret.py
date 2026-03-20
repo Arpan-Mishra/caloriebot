@@ -60,6 +60,20 @@ def get_access_token(oauth_token: str, oauth_token_secret: str, oauth_verifier: 
     return access_token, access_secret
 
 
+def delete_food_entries(entry_ids: list[str], access_token: str, access_secret: str) -> int:
+    """Delete FatSecret diary entries by ID. Returns count of successfully deleted entries."""
+    client = _get_client(access_token, access_secret)
+    deleted = 0
+    for entry_id in entry_ids:
+        try:
+            client.food_entry_delete(entry_id)
+            deleted += 1
+            logger.debug("FatSecret food_entry_delete: entry_id=%s", entry_id)
+        except Exception:
+            logger.exception("FatSecret food_entry_delete failed for entry_id=%s", entry_id)
+    return deleted
+
+
 def log_food_entry(
     food_description: str,
     meal_type: str,

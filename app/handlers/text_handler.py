@@ -133,6 +133,12 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
             "*Commands*\n"
             "  • /connect — link your FatSecret account\n"
             "  • /info — show this message\n\n"
+            "*Deleting entries*\n"
+            "Remove logged entries for a meal or the whole day:\n"
+            "  • \"delete lunch\"\n"
+            "  • \"delete today\"\n"
+            "  • \"clear my breakfast\"\n"
+            "(Deletions also remove entries from your FatSecret diary if connected.)\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "*Connecting FatSecret (optional)*\n"
             "FatSecret gives you accurate nutrition data from a real food database instead of AI estimates.\n\n"
@@ -173,18 +179,11 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
         )
         logger.info("[%s] Sent welcome message to new user", phone_number)
 
-    # Send immediate acknowledgment so the user sees feedback right away
-    if not ack_sent:
-        await send_text_message(
-            phone_number,
-            "🍽️ Got it! I'm logging your meal and crunching the numbers — "
-            "you'll get a full breakdown with macros and your daily total in just a moment! 📊",
-        )
-
-    # Detect reminder and summary intents concurrently
-    is_reminder, is_summary = await asyncio.gather(
+    # Detect all intents concurrently before sending any ack
+    is_reminder, is_summary, is_delete = await asyncio.gather(
         asyncio.to_thread(nutrition_svc.is_reminder_request, text),
         asyncio.to_thread(nutrition_svc.is_summary_request, text),
+        asyncio.to_thread(nutrition_svc.is_delete_request, text),
     )
 
     if is_reminder:
@@ -194,6 +193,18 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
     if is_summary:
         await send_text_message(phone_number, _daily_summary(db, user))
         return
+
+    if is_delete:
+        await _handle_delete(db, user, phone_number, text)
+        return
+
+    # Food logging — send ack first, then run agent
+    if not ack_sent:
+        await send_text_message(
+            phone_number,
+            "🍽️ Got it! I'm logging your meal and crunching the numbers — "
+            "you'll get a full breakdown with macros and your daily total in just a moment! 📊",
+        )
 
     # Food logging via the nutrition agent
     meal_type = _infer_meal_type()
@@ -214,6 +225,66 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
         return
 
     await send_text_message(phone_number, reply)
+
+
+def _parse_delete_target(text: str) -> dict:
+    """Return {'scope': 'meal', 'meal_type': X} or {'scope': 'day'}."""
+    text_lower = text.lower()
+    for meal in ("breakfast", "lunch", "dinner", "snack"):
+        if meal in text_lower:
+            return {"scope": "meal", "meal_type": meal}
+    return {"scope": "day"}
+
+
+async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
+    """Handle requests to delete meal entries for a specific meal type or the whole day."""
+    from app.services.fatsecret import delete_food_entries
+
+    target = _parse_delete_target(text)
+    today = date.today()
+    query = db.query(MealEntry).filter(
+        MealEntry.user_id == user.id,
+        MealEntry.logged_at >= datetime(today.year, today.month, today.day),
+    )
+    if target["scope"] == "meal":
+        query = query.filter(MealEntry.meal_type == target["meal_type"])
+
+    entries = query.all()
+    if not entries:
+        label = target["meal_type"] if target["scope"] == "meal" else "today"
+        await send_text_message(phone_number, f"No entries found for {label}.")
+        return
+
+    # Collect FatSecret entry IDs (stored as comma-separated string per MealEntry row)
+    fs_ids = []
+    for entry in entries:
+        if entry.fatsecret_entry_id:
+            fs_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
+
+    # Delete from FatSecret if connected
+    fs_deleted = 0
+    if fs_ids and user.fatsecret_access_token and user.fatsecret_access_secret:
+        fs_deleted = delete_food_entries(fs_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
+        logger.info("[%s] Deleted %d FatSecret entries", phone_number, fs_deleted)
+
+    # Delete from local DB
+    db_count = len(entries)
+    for entry in entries:
+        db.delete(entry)
+    db.commit()
+    logger.info("[%s] Deleted %d local MealEntry rows", phone_number, db_count)
+
+    plural = "s" if db_count != 1 else ""
+    if target["scope"] == "meal":
+        msg = f"🗑️ Deleted {target['meal_type'].capitalize()} entries ({db_count} item{plural}"
+    else:
+        msg = f"🗑️ Deleted all entries for today ({db_count} item{plural}"
+
+    if fs_deleted:
+        msg += ", removed from FatSecret diary too"
+    msg += ")."
+
+    await send_text_message(phone_number, msg)
 
 
 async def _handle_reminder(db: Session, user: User, phone_number: str, text: str):
