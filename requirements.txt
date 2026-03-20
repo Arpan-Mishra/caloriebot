@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+httpx
+openai
+anthropic
+langchain-anthropic
+langgraph
+fatsecret
+sqlalchemy
+psycopg2-binary
+pydantic-settings
+apscheduler
+python-dotenv
