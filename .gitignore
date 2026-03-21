@@ -1,7 +1,12 @@
 # Environment / secrets
 .env
+update_token.py
 .envrc
 *.env
+
+# Claude Code
+CLAUDE.md
+.claude/
 
 # Database files
 *.db
