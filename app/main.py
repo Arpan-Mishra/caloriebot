@@ -182,7 +182,9 @@ async def token_status(secret: str, db: Session = Depends(get_db)):
         "override_set": _token_override is not None,
         "db_token_stored": cfg is not None,
         "active_token_suffix": active[-8:] if active else None,
+        "active_token_length": len(active) if active else None,
         "db_token_suffix": cfg.value[-8:] if cfg else None,
+        "db_token_length": len(cfg.value) if cfg else None,
     }
 
 
