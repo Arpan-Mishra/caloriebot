@@ -188,6 +188,22 @@ async def token_status(secret: str, db: Session = Depends(get_db)):
     }
 
 
+@app.get("/admin/clear-token-override")
+async def clear_token_override(secret: str, db: Session = Depends(get_db)):
+    """Delete the DB token override so the env var token is used instead."""
+    if not settings.admin_secret or secret != settings.admin_secret:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+
+    from app.models import SystemConfig
+    from app.services import whatsapp as _wa
+
+    deleted = db.query(SystemConfig).filter(SystemConfig.key == "whatsapp_access_token").delete()
+    db.commit()
+    _wa._token_override = None
+    logger.info("WhatsApp token override cleared; falling back to env var")
+    return {"status": "cleared", "rows_deleted": deleted}
+
+
 @app.post("/admin/update-whatsapp-token")
 async def update_whatsapp_token(request: Request, db: Session = Depends(get_db)):
     """Update the WhatsApp access token at runtime without redeploying."""
