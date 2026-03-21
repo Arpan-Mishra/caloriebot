@@ -176,7 +176,7 @@ async def update_whatsapp_token(request: Request, db: Session = Depends(get_db))
     if not settings.admin_secret or body.get("secret") != settings.admin_secret:
         raise HTTPException(status_code=403, detail="Invalid secret")
 
-    token = body.get("token", "").strip()
+    token = "".join(body.get("token", "").split())  # strip all whitespace including newlines
     if not token:
         raise HTTPException(status_code=400, detail="token is required")
 

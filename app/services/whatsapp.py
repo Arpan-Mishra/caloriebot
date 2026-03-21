@@ -18,7 +18,7 @@ def set_whatsapp_token(token: str) -> None:
 
 
 def _get_token() -> str:
-    return _token_override or _get_token()
+    return _token_override or settings.whatsapp_access_token
 
 
 async def send_text_message(to: str, text: str) -> dict:
