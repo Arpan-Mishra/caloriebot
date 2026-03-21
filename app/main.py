@@ -166,6 +166,26 @@ async def connect_fatsecret_callback(
     return {"status": "connected", "message": "FatSecret account linked successfully! You can close this tab and return to WhatsApp."}
 
 
+@app.get("/admin/token-status")
+async def token_status(secret: str, db: Session = Depends(get_db)):
+    """Diagnostic endpoint: show which WhatsApp token is active at runtime."""
+    if not settings.admin_secret or secret != settings.admin_secret:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+
+    from app.models import SystemConfig
+    from app.services.whatsapp import _token_override, _get_token
+
+    active = _get_token()
+    cfg = db.query(SystemConfig).filter(SystemConfig.key == "whatsapp_access_token").first()
+
+    return {
+        "override_set": _token_override is not None,
+        "db_token_stored": cfg is not None,
+        "active_token_suffix": active[-8:] if active else None,
+        "db_token_suffix": cfg.value[-8:] if cfg else None,
+    }
+
+
 @app.post("/admin/update-whatsapp-token")
 async def update_whatsapp_token(request: Request, db: Session = Depends(get_db)):
     """Update the WhatsApp access token at runtime without redeploying."""
