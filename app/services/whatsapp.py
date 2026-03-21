@@ -1,16 +1,31 @@
+import logging
 import httpx
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
+
+_token_override: str | None = None
+
+
+def set_whatsapp_token(token: str) -> None:
+    """Override the WhatsApp access token at runtime (persisted to DB by caller)."""
+    global _token_override
+    _token_override = token
+    logger.info("WhatsApp access token updated in memory")
+
+
+def _get_token() -> str:
+    return _token_override or _get_token()
 
 
 async def send_text_message(to: str, text: str) -> dict:
     """Send a plain text WhatsApp message."""
     url = f"{GRAPH_API_BASE}/{settings.whatsapp_phone_number_id}/messages"
     headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
+        "Authorization": f"Bearer {_get_token()}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -27,7 +42,7 @@ async def send_text_message(to: str, text: str) -> dict:
 
 async def download_media(media_id: str) -> bytes:
     """Download a media file from WhatsApp Cloud API."""
-    headers = {"Authorization": f"Bearer {settings.whatsapp_access_token}"}
+    headers = {"Authorization": f"Bearer {_get_token()}"}
 
     # Step 1: Get the download URL
     async with httpx.AsyncClient() as client:

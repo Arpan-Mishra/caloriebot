@@ -39,6 +39,12 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         start_scheduler(db)
+        from app.models import SystemConfig
+        from app.services.whatsapp import set_whatsapp_token
+        cfg = db.query(SystemConfig).filter(SystemConfig.key == "whatsapp_access_token").first()
+        if cfg:
+            set_whatsapp_token(cfg.value)
+            logger.info("Loaded WhatsApp token override from DB")
     finally:
         db.close()
     yield
@@ -158,3 +164,29 @@ async def connect_fatsecret_callback(
         logger.exception("Failed to send FatSecret connected WhatsApp message to %s", phone_number)
 
     return {"status": "connected", "message": "FatSecret account linked successfully! You can close this tab and return to WhatsApp."}
+
+
+@app.post("/admin/update-whatsapp-token")
+async def update_whatsapp_token(request: Request, db: Session = Depends(get_db)):
+    """Update the WhatsApp access token at runtime without redeploying."""
+    from app.models import SystemConfig
+    from app.services.whatsapp import set_whatsapp_token
+
+    body = await request.json()
+    if not settings.admin_secret or body.get("secret") != settings.admin_secret:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+
+    token = body.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+
+    cfg = db.query(SystemConfig).filter(SystemConfig.key == "whatsapp_access_token").first()
+    if cfg:
+        cfg.value = token
+    else:
+        db.add(SystemConfig(key="whatsapp_access_token", value=token))
+    db.commit()
+
+    set_whatsapp_token(token)
+    logger.info("WhatsApp access token updated via admin endpoint")
+    return {"status": "updated"}

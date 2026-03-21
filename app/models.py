@@ -60,6 +60,16 @@ class Reminder(Base):
     user = relationship("User", back_populates="reminders")
 
 
+class SystemConfig(Base):
+    """Key-value store for runtime-configurable app settings (e.g. WhatsApp token)."""
+
+    __tablename__ = "system_config"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class OAuthTemp(Base):
     """Temporary storage for FatSecret OAuth request token secrets.
 
