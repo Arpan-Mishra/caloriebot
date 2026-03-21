@@ -171,8 +171,13 @@ async def update_whatsapp_token(request: Request, db: Session = Depends(get_db))
     """Update the WhatsApp access token at runtime without redeploying."""
     from app.models import SystemConfig
     from app.services.whatsapp import set_whatsapp_token
+    import json as _json
 
-    body = await request.json()
+    raw = await request.body()
+    # Strip control characters (newlines, carriage returns, tabs) before JSON parsing
+    # so tokens pasted with terminal line-wrapping are handled correctly
+    sanitized = raw.replace(b'\n', b'').replace(b'\r', b'').replace(b'\t', b'')
+    body = _json.loads(sanitized)
     if not settings.admin_secret or body.get("secret") != settings.admin_secret:
         raise HTTPException(status_code=403, detail="Invalid secret")
 
