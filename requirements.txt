@@ -6,6 +6,7 @@ anthropic
 langchain-anthropic
 langgraph
 fatsecret
+nutrichat @ git+https://github.com/Arpan-Mishra/NutriChat.git#subdirectory=nutrichat-python
 sqlalchemy
 psycopg2-binary
 pydantic-settings

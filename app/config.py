@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     fatsecret_consumer_key: str = ""
     fatsecret_consumer_secret: str = ""
 
+    nutrichat_base_url: str = "https://nutrichat-backend-production.up.railway.app"
+
     database_url: str = "sqlite:///./calorie_bot.db"
     app_base_url: str = "http://localhost:8000"
     admin_secret: str = ""

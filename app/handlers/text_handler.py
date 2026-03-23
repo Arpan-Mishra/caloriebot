@@ -161,6 +161,46 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
         )
         return
 
+    # Handle NutriChat API key linking: "link nutrichat_live_xxxx"
+    text_lower = text.strip().lower()
+    if text_lower.startswith("link ") and "nutrichat" in text_lower:
+        from nutrichat import NutriChatClient, AuthError as NCAuthError
+
+        api_key = text.strip().split(None, 1)[1].strip()
+        if not api_key.startswith("nutrichat_live_"):
+            await send_text_message(
+                phone_number,
+                "Invalid key. It should start with 'nutrichat_live_'.",
+            )
+            return
+
+        user, _ = _get_or_create_user(db, phone_number)
+        nc_settings = get_settings()
+        try:
+            async with NutriChatClient(api_key=api_key, base_url=nc_settings.nutrichat_base_url) as client:
+                await client.get_today_totals()
+        except NCAuthError:
+            await send_text_message(
+                phone_number,
+                "Invalid or expired API key. Generate a new one in the NutriChat app.",
+            )
+            return
+        except Exception:
+            logger.exception("[%s] NutriChat key validation failed", phone_number)
+            await send_text_message(phone_number, "Could not verify key. Try again later.")
+            return
+
+        user.nutrichat_api_key = api_key
+        db.commit()
+        logger.info("[%s] NutriChat API key linked", phone_number)
+        await send_text_message(
+            phone_number,
+            "✅ Linked! Your NutriChat app and this bot are now synced.\n\n"
+            "Going forward I'll log all your meals directly to your NutriChat diary. "
+            "Just tell me what you ate!",
+        )
+        return
+
     user, is_new = _get_or_create_user(db, phone_number)
     _get_or_create_state(db, user)
 
