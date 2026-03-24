@@ -82,16 +82,21 @@ async def log_food_entries_batch(
     # Convert items to NutriChat format
     nc_items = []
     for item in items:
-        nc_items.append({
+        nc_item = {
             "food_id": int(item["food_id"]),
             "food_name": item.get("food_name", ""),
             "number_of_units": float(item.get("number_of_units") or 1),
-            "metric_serving_amount": float(item.get("metric_serving_amount") or 0),
             "calories": float(item.get("calories") or 0),
             "protein_g": float(item.get("protein_g") or 0),
             "fat_g": float(item.get("fat_g") or 0),
             "carbs_g": float(item.get("carbs_g") or 0),
-        })
+        }
+        # Only pass metric_serving_amount if present and non-zero;
+        # the SDK defaults to 100 when omitted
+        msa = float(item.get("metric_serving_amount") or 0)
+        if msa > 0:
+            nc_item["metric_serving_amount"] = msa
+        nc_items.append(nc_item)
 
     try:
         async with _get_client(api_key) as client:
