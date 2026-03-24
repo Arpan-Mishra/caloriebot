@@ -93,7 +93,7 @@ Example: "I had pintola protein oats 50g and 2 boiled eggs"
 
 ---
 
-## PHASE 2 — Search FatSecret (parallel, fatsecret_connected = true only)
+## PHASE 2 — Search food database (parallel, food_db_connected = true only)
 
 Call search_food for EVERY item IN PARALLEL (all in one response turn).
 Use the search_query from Phase 1 — never include quantities.
@@ -142,7 +142,7 @@ Work through each case:
 - "1 glass" milk/juice ≈ 200ml
 
 **No quantity stated at all:**
-- Use number_of_units = 1.0 (one standard serving as listed in FatSecret)
+- Use number_of_units = 1.0 (one standard serving as listed in the food database)
 
 **Sanity check — before passing to log_food_entries:**
 - number_of_units should almost always be between 0.1 and 20
@@ -157,7 +157,7 @@ Work through each case:
 
 **3d. Carry serving_number_of_units forward:**
 Copy the `serving_number_of_units` value from the search result directly into the log_food_entries item.
-Do not modify it — the backend needs it to correctly convert your servings count into FatSecret's native unit.
+Do not modify it — the backend needs it to correctly convert your servings count into the food database's native unit.
 
 ---
 
@@ -188,13 +188,13 @@ Use the log_food_entries response for 📊. Use get_today_totals for 📅.
   • Fat:      {X.X} g
 
 🔍 *Breakdown:*
-  • {FatSecret food name} ({number_of_units × metric_serving_amount}{unit}, e.g. "200g"): {cal} kcal | {pro}p / {carb}c / {fat}f
+  • {food name} ({number_of_units × metric_serving_amount}{unit}, e.g. "200g"): {cal} kcal | {pro}p / {carb}c / {fat}f
 
 📅 *Today's total:* {X} kcal | {pro}p / {carb}c / {fat}f
 
 ---
 
-## If fatsecret_connected is false
+## If food_db_connected is false
 
 Skip Phases 2–3. Estimate macros from your knowledge, apply any quantity scaling, then call log_food_entries with your estimates (omit food_id/serving_id, set number_of_units=1.0)."""
 
@@ -207,7 +207,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "search_food",
         "description": (
-            "Search FatSecret for a food item. Returns up to 5 matches sorted by name similarity. "
+            "Search the food database for a food item. Returns up to 5 matches sorted by name similarity. "
             "Each result includes: food_id, food_name, serving_id, serving_description, "
             "metric_serving_amount (numeric), metric_serving_unit (g/ml/oz), "
             "calories_per_serving, protein_g_per_serving, fat_g_per_serving, carbs_g_per_serving, "
@@ -233,7 +233,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "log_food_entries",
         "description": (
             "Log selected food entries to the diary. Call once after searching, "
-            "with all items. Saves to FatSecret (if connected) and local database."
+            "with all items. Saves to food database (if connected) and local database."
         ),
         "input_schema": {
             "type": "object",
@@ -250,18 +250,18 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "properties": {
                             "food_id": {
                                 "type": "string",
-                                "description": "FatSecret food_id (omit when estimating)",
+                                "description": "Food database food_id (omit when estimating)",
                             },
                             "serving_id": {
                                 "type": "string",
-                                "description": "FatSecret serving_id (omit when estimating)",
+                                "description": "Food database serving_id (omit when estimating)",
                             },
                             "serving_number_of_units": {
                                 "type": "number",
                                 "description": (
                                     "Copy the serving_number_of_units value from the search_food result unchanged. "
-                                    "The backend uses this to convert agent servings → FatSecret's native unit. "
-                                    "Omit when estimating (no FatSecret match)."
+                                    "The backend uses this to convert agent servings into the food database's native unit. "
+                                    "Omit when estimating (no food database match)."
                                 ),
                             },
                             "number_of_units": {
@@ -623,7 +623,8 @@ async def run_nutrition_agent(
         f"User message: {text}\n\n"
         f"Context:\n"
         f"- meal_type: {meal_type}\n"
-        f"- fatsecret_connected: {str(food_db_connected).lower()}\n"
+        f"- food_db_connected: {str(food_db_connected).lower()}\n"
+        f"- food_db_source: {'nutrichat' if has_nutrichat else 'fatsecret' if has_fatsecret else 'none'}\n"
         f"- current_time: {datetime.now().strftime('%H:%M')}"
     )
 
