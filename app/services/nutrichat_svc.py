@@ -151,3 +151,29 @@ async def get_food_entries_today(api_key: str) -> dict:
     except NutriChatError:
         logger.exception("NutriChat get_food_entries_today failed")
         return {"calories": 0, "protein_g": 0, "fat_g": 0, "carbs_g": 0, "meal_count": 0}
+
+
+async def delete_food_entries(entry_ids: list[str], api_key: str) -> int:
+    """Delete diary entries from NutriChat by ID.
+
+    Returns count of successfully deleted entries.
+    """
+    deleted = 0
+    try:
+        async with _get_client(api_key) as client:
+            for entry_id in entry_ids:
+                try:
+                    response = await client._client.delete(f"/api/v1/diary/entries/{entry_id}")
+                    if response.status_code < 400:
+                        deleted += 1
+                        logger.debug("NutriChat entry deleted: id=%s", entry_id)
+                    else:
+                        logger.warning("NutriChat delete entry %s returned %d", entry_id, response.status_code)
+                except NutriChatError:
+                    logger.exception("NutriChat delete failed for entry_id=%s", entry_id)
+    except AuthError:
+        logger.error("NutriChat auth failed on delete_food_entries — API key may be revoked")
+    except NutriChatError:
+        logger.exception("NutriChat delete_food_entries failed")
+    logger.info("NutriChat: deleted %d of %d entries", deleted, len(entry_ids))
+    return deleted

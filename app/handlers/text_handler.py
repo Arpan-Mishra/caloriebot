@@ -289,7 +289,8 @@ def _parse_delete_target(text: str) -> dict:
 
 async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
     """Handle requests to delete meal entries for a specific meal type or the whole day."""
-    from app.services.fatsecret import delete_food_entries
+    from app.services import nutrichat_svc as nc_svc
+    from app.services.fatsecret import delete_food_entries as fs_delete_food_entries
 
     target = _parse_delete_target(text)
     today = date.today()
@@ -306,17 +307,21 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
         await send_text_message(phone_number, f"No entries found for {label}.")
         return
 
-    # Collect food diary entry IDs (stored as comma-separated string per MealEntry row)
-    fs_ids = []
+    # Collect diary entry IDs (stored as comma-separated string per MealEntry row)
+    entry_ids = []
     for entry in entries:
         if entry.fatsecret_entry_id:
-            fs_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
+            entry_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
 
-    # Delete from FatSecret if connected (legacy — kept for existing FatSecret users)
-    fs_deleted = 0
-    if fs_ids and user.fatsecret_access_token and user.fatsecret_access_secret:
-        fs_deleted = delete_food_entries(fs_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
-        logger.info("[%s] Deleted %d external diary entries", phone_number, fs_deleted)
+    # Delete from NutriChat if connected
+    ext_deleted = 0
+    if entry_ids and user.nutrichat_api_key:
+        ext_deleted = await nc_svc.delete_food_entries(entry_ids, user.nutrichat_api_key)
+        logger.info("[%s] Deleted %d NutriChat diary entries", phone_number, ext_deleted)
+    # Legacy: delete from FatSecret if connected
+    elif entry_ids and user.fatsecret_access_token and user.fatsecret_access_secret:
+        ext_deleted = fs_delete_food_entries(entry_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
+        logger.info("[%s] Deleted %d FatSecret diary entries", phone_number, ext_deleted)
 
     # Delete from local DB
     db_count = len(entries)
@@ -331,7 +336,7 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
     else:
         msg = f"🗑️ Deleted all entries for today ({db_count} item{plural}"
 
-    if fs_deleted:
+    if ext_deleted:
         msg += ", removed from food diary too"
     msg += ")."
 
