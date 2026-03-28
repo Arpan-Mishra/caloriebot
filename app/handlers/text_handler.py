@@ -307,21 +307,25 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
         await send_text_message(phone_number, f"No entries found for {label}.")
         return
 
-    # Collect diary entry IDs (stored as comma-separated string per MealEntry row)
-    entry_ids = []
-    for entry in entries:
-        if entry.fatsecret_entry_id:
-            entry_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
-
     # Delete from NutriChat if connected
     ext_deleted = 0
-    if entry_ids and user.nutrichat_api_key:
-        ext_deleted = await nc_svc.delete_food_entries(entry_ids, user.nutrichat_api_key)
+    if user.nutrichat_api_key:
+        nc_meal_type = target["meal_type"] if target["scope"] == "meal" else None
+        ext_deleted = await nc_svc.delete_food_entries(
+            user.nutrichat_api_key,
+            meal_type=nc_meal_type,
+            target_date=today.isoformat(),
+        )
         logger.info("[%s] Deleted %d NutriChat diary entries", phone_number, ext_deleted)
     # Legacy: delete from FatSecret if connected
-    elif entry_ids and user.fatsecret_access_token and user.fatsecret_access_secret:
-        ext_deleted = fs_delete_food_entries(entry_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
-        logger.info("[%s] Deleted %d FatSecret diary entries", phone_number, ext_deleted)
+    elif user.fatsecret_access_token and user.fatsecret_access_secret:
+        entry_ids = []
+        for entry in entries:
+            if entry.fatsecret_entry_id:
+                entry_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
+        if entry_ids:
+            ext_deleted = fs_delete_food_entries(entry_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
+            logger.info("[%s] Deleted %d FatSecret diary entries", phone_number, ext_deleted)
 
     # Delete from local DB
     db_count = len(entries)

@@ -153,27 +153,30 @@ async def get_food_entries_today(api_key: str) -> dict:
         return {"calories": 0, "protein_g": 0, "fat_g": 0, "carbs_g": 0, "meal_count": 0}
 
 
-async def delete_food_entries(entry_ids: list[str], api_key: str) -> int:
-    """Delete diary entries from NutriChat by ID.
+async def delete_food_entries(
+    api_key: str,
+    meal_type: str | None = None,
+    target_date: str | None = None,
+) -> int:
+    """Delete diary entries from NutriChat for a date, optionally filtered by meal type.
 
-    Returns count of successfully deleted entries.
+    Args:
+        api_key: User's NutriChat API key.
+        meal_type: One of breakfast, lunch, dinner, snack. None deletes all meals.
+        target_date: ISO 8601 date (YYYY-MM-DD). Defaults to today.
+
+    Returns:
+        Count of deleted entries.
     """
-    deleted = 0
     try:
         async with _get_client(api_key) as client:
-            for entry_id in entry_ids:
-                try:
-                    response = await client._client.delete(f"/api/v1/diary/entries/{entry_id}")
-                    if response.status_code < 400:
-                        deleted += 1
-                        logger.debug("NutriChat entry deleted: id=%s", entry_id)
-                    else:
-                        logger.warning("NutriChat delete entry %s returned %d", entry_id, response.status_code)
-                except NutriChatError:
-                    logger.exception("NutriChat delete failed for entry_id=%s", entry_id)
+            result = await client.delete_entries(date=target_date, meal_type=meal_type)
+        deleted = result.get("deleted", 0)
+        logger.info("NutriChat: deleted %d entries (date=%s, meal_type=%s)", deleted, target_date, meal_type)
+        return deleted
     except AuthError:
         logger.error("NutriChat auth failed on delete_food_entries — API key may be revoked")
+        return 0
     except NutriChatError:
         logger.exception("NutriChat delete_food_entries failed")
-    logger.info("NutriChat: deleted %d of %d entries", deleted, len(entry_ids))
-    return deleted
+        return 0
