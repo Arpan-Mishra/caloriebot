@@ -294,12 +294,29 @@ def _parse_delete_target(text: str) -> dict:
 
 
 async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
-    """Handle requests to delete meal entries for a specific meal type or the whole day."""
+    """Handle requests to delete meal entries for a specific meal type or the whole day.
+
+    NutriChat is the source of truth — delete there first, then clean up local DB.
+    """
     from app.services import nutrichat_svc as nc_svc
     from app.services.fatsecret import delete_food_entries as fs_delete_food_entries
 
     target = _parse_delete_target(text)
     today = datetime.now(_tz_from_phone(phone_number)).date()
+    nc_meal_type = target["meal_type"] if target["scope"] == "meal" else None
+    label = nc_meal_type or "today"
+
+    # Delete from NutriChat first (source of truth)
+    nc_deleted = 0
+    if user.nutrichat_api_key:
+        nc_deleted = await nc_svc.delete_food_entries(
+            user.nutrichat_api_key,
+            meal_type=nc_meal_type,
+            target_date=today.isoformat(),
+        )
+        logger.info("[%s] Deleted %d NutriChat diary entries", phone_number, nc_deleted)
+
+    # Also clean up local DB entries
     query = db.query(MealEntry).filter(
         MealEntry.user_id == user.id,
         MealEntry.logged_at >= datetime(today.year, today.month, today.day),
@@ -308,47 +325,32 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
         query = query.filter(MealEntry.meal_type == target["meal_type"])
 
     entries = query.all()
-    if not entries:
-        label = target["meal_type"] if target["scope"] == "meal" else "today"
-        await send_text_message(phone_number, f"No entries found for {label}.")
-        return
 
-    # Delete from NutriChat if connected
-    ext_deleted = 0
-    if user.nutrichat_api_key:
-        nc_meal_type = target["meal_type"] if target["scope"] == "meal" else None
-        ext_deleted = await nc_svc.delete_food_entries(
-            user.nutrichat_api_key,
-            meal_type=nc_meal_type,
-            target_date=today.isoformat(),
-        )
-        logger.info("[%s] Deleted %d NutriChat diary entries", phone_number, ext_deleted)
-    # Legacy: delete from FatSecret if connected
-    elif user.fatsecret_access_token and user.fatsecret_access_secret:
-        entry_ids = []
+    # Legacy: delete from FatSecret if connected and no NutriChat
+    if not user.nutrichat_api_key and user.fatsecret_access_token and user.fatsecret_access_secret:
+        fs_ids = []
         for entry in entries:
             if entry.fatsecret_entry_id:
-                entry_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
-        if entry_ids:
-            ext_deleted = fs_delete_food_entries(entry_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
-            logger.info("[%s] Deleted %d FatSecret diary entries", phone_number, ext_deleted)
+                fs_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
+        if fs_ids:
+            fs_delete_food_entries(fs_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
 
-    # Delete from local DB
     db_count = len(entries)
     for entry in entries:
         db.delete(entry)
     db.commit()
     logger.info("[%s] Deleted %d local MealEntry rows", phone_number, db_count)
 
-    plural = "s" if db_count != 1 else ""
-    if target["scope"] == "meal":
-        msg = f"🗑️ Deleted {target['meal_type'].capitalize()} entries ({db_count} item{plural}"
-    else:
-        msg = f"🗑️ Deleted all entries for today ({db_count} item{plural}"
+    total_deleted = nc_deleted or db_count
+    if total_deleted == 0:
+        await send_text_message(phone_number, f"No entries found for {label}.")
+        return
 
-    if ext_deleted:
-        msg += ", removed from food diary too"
-    msg += ")."
+    plural = "s" if total_deleted != 1 else ""
+    if target["scope"] == "meal":
+        msg = f"🗑️ Deleted {target['meal_type'].capitalize()} entries ({total_deleted} item{plural})."
+    else:
+        msg = f"🗑️ Deleted all entries for today ({total_deleted} item{plural})."
 
     await send_text_message(phone_number, msg)
 
