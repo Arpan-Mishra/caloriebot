@@ -11,4 +11,5 @@ sqlalchemy
 psycopg2-binary
 pydantic-settings
 apscheduler
+phonenumbers
 python-dotenv

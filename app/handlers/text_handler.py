@@ -8,6 +8,10 @@ diary logging, and DB persistence in one agentic loop.
 import asyncio
 import logging
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
+
+import phonenumbers
+from phonenumbers import timezone as pn_tz
 from sqlalchemy.orm import Session
 
 from app.models import User, MealEntry, ConversationState
@@ -21,10 +25,25 @@ logger = logging.getLogger(__name__)
 
 VALID_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
 
+_FALLBACK_TZ = ZoneInfo("UTC")
 
-def _infer_meal_type() -> str:
-    """Infer meal type from current local time."""
-    hour = datetime.now().hour
+
+def _tz_from_phone(phone_number: str) -> ZoneInfo:
+    """Resolve timezone from phone number country code. Falls back to UTC."""
+    try:
+        pn = phonenumbers.parse(f"+{phone_number.lstrip('+')}")
+        tzs = pn_tz.time_zones_for_number(pn)
+        if tzs:
+            return ZoneInfo(tzs[0])
+    except Exception:
+        logger.debug("Could not resolve timezone for %s, using UTC", phone_number)
+    return _FALLBACK_TZ
+
+
+def _infer_meal_type(phone_number: str) -> str:
+    """Infer meal type from current time in the user's timezone."""
+    tz = _tz_from_phone(phone_number)
+    hour = datetime.now(tz).hour
     if 5 <= hour < 11:
         return "breakfast"
     elif 11 <= hour < 15:
@@ -239,7 +258,7 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
         )
 
     # Food logging via the nutrition agent
-    meal_type = _infer_meal_type()
+    meal_type = _infer_meal_type(phone_number)
     logger.debug("[%s] Inferred meal_type=%r from time", phone_number, meal_type)
 
     # Reload user from DB to pick up any tokens that were added
