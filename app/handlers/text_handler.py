@@ -81,8 +81,8 @@ def _get_or_create_state(db: Session, user: User) -> ConversationState:
     return state
 
 
-def _daily_summary(db: Session, user: User) -> str:
-    today = date.today()
+def _daily_summary(db: Session, user: User, phone_number: str) -> str:
+    today = datetime.now(_tz_from_phone(phone_number)).date()
     entries = (
         db.query(MealEntry)
         .filter(
@@ -242,7 +242,7 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
         return
 
     if is_summary:
-        await send_text_message(phone_number, _daily_summary(db, user))
+        await send_text_message(phone_number, _daily_summary(db, user, phone_number))
         return
 
     if is_delete:
@@ -258,8 +258,14 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
         )
 
     # Food logging via the nutrition agent
+    # Check if user explicitly mentioned a meal type in the message
     meal_type = _infer_meal_type(phone_number)
-    logger.debug("[%s] Inferred meal_type=%r from time", phone_number, meal_type)
+    text_lower = text.strip().lower()
+    for mt in ("breakfast", "lunch", "dinner", "snack"):
+        if mt in text_lower:
+            meal_type = mt
+            break
+    logger.debug("[%s] meal_type=%r for logging", phone_number, meal_type)
 
     # Reload user from DB to pick up any tokens that were added
     # while a voice note was being transcribed (race condition).
@@ -293,7 +299,7 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
     from app.services.fatsecret import delete_food_entries as fs_delete_food_entries
 
     target = _parse_delete_target(text)
-    today = date.today()
+    today = datetime.now(_tz_from_phone(phone_number)).date()
     query = db.query(MealEntry).filter(
         MealEntry.user_id == user.id,
         MealEntry.logged_at >= datetime(today.year, today.month, today.day),
