@@ -2,7 +2,7 @@
 Handle incoming text messages.
 
 Intent detection (reminder / summary) runs concurrently via asyncio.gather.
-Food logging is delegated to the nutrition agent which handles FatSecret search,
+Food logging is delegated to the nutrition agent which handles food search,
 diary logging, and DB persistence in one agentic loop.
 """
 import asyncio
@@ -112,12 +112,9 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
 
     # Handle /info command — send bot instructions and stop
     if text.strip().lower() == "/info":
-        settings = get_settings()
-        normalized = _normalize_phone(phone_number)
-        connect_url = f"{settings.app_base_url.rstrip('/')}/connect/fatsecret?phone_number={normalized}"
         await send_text_message(
             phone_number,
-            "📖 *CalorieBot — How It Works*\n\n"
+            "📖 *NutriBot — How It Works*\n\n"
             "*Logging meals*\n"
             "Just tell me what you ate in plain text or send a voice note:\n"
             "  • \"2 eggs and toast\"\n"
@@ -131,33 +128,30 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
             "Set meal reminders in natural language:\n"
             "  • \"Remind me every day at 8pm to log dinner\"\n\n"
             "*Commands*\n"
-            "  • /connect — link your FatSecret account\n"
+            "  • /connect — link your NutriChat account\n"
             "  • /info — show this message\n\n"
             "*Deleting entries*\n"
             "Remove logged entries for a meal or the whole day:\n"
             "  • \"delete lunch\"\n"
             "  • \"delete today\"\n"
-            "  • \"clear my breakfast\"\n"
-            "(Deletions also remove entries from your FatSecret diary if connected.)\n\n"
+            "  • \"clear my breakfast\"\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "*Connecting FatSecret (optional)*\n"
-            "FatSecret gives you accurate nutrition data from a real food database instead of AI estimates.\n\n"
-            f"Link your account: {connect_url}\n\n"
-            "⚠️ *Important:* On the FatSecret page you must *log in* with email + password.\n"
-            "Do *not* use \"Sign in with Google\" — it won't redirect back to the bot.\n\n"
-            "No FatSecret account yet? Create one at fatsecret.com first (use email, not Google), "
-            "then tap the link above.",
+            "*Connecting NutriChat (optional)*\n"
+            "Link your NutriChat account to sync meals with the NutriChat app "
+            "and get accurate nutrition data from a real food database.\n\n"
+            "To connect, send:\n"
+            "  link nutrichat_live_YOUR_API_KEY\n\n"
+            "You can find your API key in the NutriChat app settings.",
         )
         return
 
-    # Handle /connect command — send OAuth link and stop, no food logging
+    # Handle /connect command — send NutriChat linking instructions
     if text.strip().lower() == "/connect":
-        settings = get_settings()
-        normalized = _normalize_phone(phone_number)
-        connect_url = f"{settings.app_base_url.rstrip('/')}/connect/fatsecret?phone_number={normalized}"
         await send_text_message(
             phone_number,
-            f"Tap this link to connect your FatSecret account:\n{connect_url}",
+            "To connect your NutriChat account, send:\n"
+            "  link nutrichat_live_YOUR_API_KEY\n\n"
+            "You can find your API key in the NutriChat app settings.",
         )
         return
 
@@ -205,17 +199,15 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
     _get_or_create_state(db, user)
 
     if is_new:
-        settings = get_settings()
-        normalized = _normalize_phone(phone_number)
-        connect_url = f"{settings.app_base_url.rstrip('/')}/connect/fatsecret?phone_number={normalized}"
         await send_text_message(
             phone_number,
-            f"👋 Welcome to CalorieBot!\n\n"
-            f"I track your meals and macros automatically.\n\n"
-            f"To get the most accurate nutrition data, connect your FatSecret account:\n"
-            f"{connect_url}\n\n"
-            f"You can still log meals without connecting — I'll estimate macros using AI. "
-            f"Connect FatSecret any time for database-accurate values.",
+            "👋 Welcome to NutriBot!\n\n"
+            "I track your meals and macros automatically.\n\n"
+            "Just tell me what you ate — I'll log the nutrition for you.\n\n"
+            "To sync with the NutriChat app and get accurate food database lookups, send:\n"
+            "  link nutrichat_live_YOUR_API_KEY\n\n"
+            "You can find your API key in the NutriChat app settings.\n\n"
+            "Send /info for a full list of commands.",
         )
         logger.info("[%s] Sent welcome message to new user", phone_number)
 
@@ -250,7 +242,7 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
     meal_type = _infer_meal_type()
     logger.debug("[%s] Inferred meal_type=%r from time", phone_number, meal_type)
 
-    # Reload user from DB to pick up any FatSecret tokens that were added
+    # Reload user from DB to pick up any tokens that were added
     # while a voice note was being transcribed (race condition).
     db.refresh(user)
 
@@ -295,17 +287,17 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
         await send_text_message(phone_number, f"No entries found for {label}.")
         return
 
-    # Collect FatSecret entry IDs (stored as comma-separated string per MealEntry row)
+    # Collect food diary entry IDs (stored as comma-separated string per MealEntry row)
     fs_ids = []
     for entry in entries:
         if entry.fatsecret_entry_id:
             fs_ids.extend(i.strip() for i in entry.fatsecret_entry_id.split(",") if i.strip())
 
-    # Delete from FatSecret if connected
+    # Delete from FatSecret if connected (legacy — kept for existing FatSecret users)
     fs_deleted = 0
     if fs_ids and user.fatsecret_access_token and user.fatsecret_access_secret:
         fs_deleted = delete_food_entries(fs_ids, user.fatsecret_access_token, user.fatsecret_access_secret)
-        logger.info("[%s] Deleted %d FatSecret entries", phone_number, fs_deleted)
+        logger.info("[%s] Deleted %d external diary entries", phone_number, fs_deleted)
 
     # Delete from local DB
     db_count = len(entries)
@@ -321,7 +313,7 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
         msg = f"🗑️ Deleted all entries for today ({db_count} item{plural}"
 
     if fs_deleted:
-        msg += ", removed from FatSecret diary too"
+        msg += ", removed from food diary too"
     msg += ")."
 
     await send_text_message(phone_number, msg)

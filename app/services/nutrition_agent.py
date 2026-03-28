@@ -28,10 +28,6 @@ passing a ``config={"configurable": {"thread_id": user.id}}`` to ``ainvoke``.
                         by the graph. Stored so a checkpointer can reconstruct
                         which meal a past session belonged to.
 
-  has_fatsecret       – Snapshot of whether FatSecret tokens were present at
-                        invocation. Stored so replays / memory reads reflect
-                        the context under which logging happened.
-
   food_description    – Populated by the log_food_entries tool. Short human-
                         readable description of the full meal that was logged
                         (e.g. "Dal rice with salad"). Designed as a memory
@@ -40,12 +36,12 @@ passing a ``config={"configurable": {"thread_id": user.id}}`` to ``ainvoke``.
 
   logged_items        – Populated by the log_food_entries tool. List of dicts
                         with food_name, calories, protein_g, fat_g, carbs_g for
-                        every item that was confirmed (FatSecret or estimated).
+                        every item that was confirmed (NutriChat or estimated).
                         Designed as a memory anchor for per-item recall.
 
-  fatsecret_entry_ids – Populated by the log_food_entries tool. FatSecret diary
+  entry_ids           – Populated by the log_food_entries tool. NutriChat diary
                         entry IDs as strings. Lets future memory/audit code
-                        cross-reference local DB records with FatSecret entries.
+                        cross-reference local DB records with NutriChat entries.
 """
 
 import asyncio
@@ -63,7 +59,6 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import MealEntry, User
-from app.services import fatsecret as fs_svc
 from app.services import nutrichat_svc as nc_svc
 
 logger = logging.getLogger(__name__)
@@ -328,11 +323,10 @@ class NutritionAgentState(TypedDict):
     messages: Annotated[list, add_messages]
     meal_type: str
     has_nutrichat: bool
-    has_fatsecret: bool
     # Populated by log_food_entries tool — designed as future memory anchors
     food_description: str
     logged_items: list
-    fatsecret_entry_ids: list
+    entry_ids: list
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +345,7 @@ def _build_graph(user: User, meal_type: str, db: Session):
     ``config={"configurable": {"thread_id": str(user.id)}}`` to ``ainvoke``.
     """
     has_nutrichat = bool(user.nutrichat_api_key)
-    has_fatsecret = bool(user.fatsecret_access_token and user.fatsecret_access_secret)
-    has_food_db = has_nutrichat or has_fatsecret
+    has_food_db = has_nutrichat
 
     # Accumulates state patches from tools so the tools node can return them
     # as proper graph state updates. Only log_food_entries ever appends here.
@@ -364,17 +357,9 @@ def _build_graph(user: User, meal_type: str, db: Session):
 
     async def _handle_search_food(args: dict) -> str:
         query: str = args["query"]
-        if not has_food_db:
+        if not has_nutrichat:
             return json.dumps({"error": "No food database connected", "results": []})
-        if has_nutrichat:
-            results = await nc_svc.search_food(query, user.nutrichat_api_key)
-        else:
-            results = await asyncio.to_thread(
-                fs_svc.search_food,
-                query,
-                user.fatsecret_access_token,
-                user.fatsecret_access_secret,
-            )
+        results = await nc_svc.search_food(query, user.nutrichat_api_key)
         logger.debug("search_food %r → %d results", query, len(results))
         return json.dumps({"results": results})
 
@@ -382,56 +367,21 @@ def _build_graph(user: User, meal_type: str, db: Session):
         food_description: str = args["food_description"]
         items: list[dict] = args["items"]
 
-        fs_ids: list[str] = []
+        entry_ids: list[str] = []
         confirmed_items: list[dict] = []
 
         if has_nutrichat:
-            nc_items = [i for i in items if i.get("food_id")]
-            estimate_items = [i for i in items if not i.get("food_id")]
-
-            if nc_items:
-                nc_results = await nc_svc.log_food_entries_batch(
-                    nc_items,
-                    meal_type,
-                    user.nutrichat_api_key,
-                )
-                for r in nc_results:
-                    fs_ids.append(r["entry_id"])
-                    confirmed_items.append(r)
-
-            for item in estimate_items:
-                confirmed_items.append({
-                    "food_name": item["food_name"],
-                    "calories": float(item.get("calories") or 0),
-                    "protein_g": float(item.get("protein_g") or 0),
-                    "fat_g": float(item.get("fat_g") or 0),
-                    "carbs_g": float(item.get("carbs_g") or 0),
-                })
-        elif has_fatsecret:
-            fs_items = [i for i in items if i.get("food_id") and i.get("serving_id")]
-            estimate_items = [i for i in items if not (i.get("food_id") and i.get("serving_id"))]
-
-            if fs_items:
-                fs_results = await asyncio.to_thread(
-                    fs_svc.log_food_entries_batch,
-                    fs_items,
-                    meal_type,
-                    user.fatsecret_access_token,
-                    user.fatsecret_access_secret,
-                )
-                for r in fs_results:
-                    fs_ids.append(r["entry_id"])
-                    confirmed_items.append(r)
-
-            for item in estimate_items:
-                confirmed_items.append({
-                    "food_name": item["food_name"],
-                    "calories": float(item.get("calories") or 0),
-                    "protein_g": float(item.get("protein_g") or 0),
-                    "fat_g": float(item.get("fat_g") or 0),
-                    "carbs_g": float(item.get("carbs_g") or 0),
-                })
+            # Route ALL items through NutriChat (both searched and estimates)
+            nc_results = await nc_svc.log_food_entries_batch(
+                items,
+                meal_type,
+                user.nutrichat_api_key,
+            )
+            for r in nc_results:
+                entry_ids.append(r["entry_id"])
+                confirmed_items.append(r)
         else:
+            # No food DB — local-only estimates
             for item in items:
                 confirmed_items.append({
                     "food_name": item["food_name"],
@@ -455,7 +405,7 @@ def _build_graph(user: User, meal_type: str, db: Session):
             fat_g=total_fat,
             carbs_g=total_carb,
             logged_at=datetime.utcnow(),
-            fatsecret_entry_id=",".join(fs_ids) if fs_ids else None,
+            fatsecret_entry_id=",".join(entry_ids) if entry_ids else None,
         )
         db.add(entry)
         db.commit()
@@ -470,7 +420,7 @@ def _build_graph(user: User, meal_type: str, db: Session):
         _tool_state_patches.append({
             "food_description": food_description,
             "logged_items": confirmed_items,
-            "fatsecret_entry_ids": fs_ids,
+            "entry_ids": entry_ids,
         })
 
         return json.dumps({
@@ -488,12 +438,6 @@ def _build_graph(user: User, meal_type: str, db: Session):
     async def _handle_get_today_totals(_args: dict) -> str:
         if has_nutrichat:
             totals = await nc_svc.get_food_entries_today(user.nutrichat_api_key)
-        elif has_fatsecret:
-            totals = await asyncio.to_thread(
-                fs_svc.get_food_entries_today,
-                user.fatsecret_access_token,
-                user.fatsecret_access_secret,
-            )
         else:
             # Fallback: sum today's local DB entries (estimated macros only)
             today = date.today()
@@ -611,20 +555,17 @@ async def run_nutrition_agent(
     """Run the LangGraph nutrition agent and return the formatted WhatsApp reply.
 
     Builds the graph, invokes it with an initial state, and extracts the final
-    AI text response. FatSecret + local DB persistence is handled inside the
+    AI text response. NutriChat + local DB persistence is handled inside the
     graph's log_food_entries tool handler.
     """
     has_nutrichat = bool(user.nutrichat_api_key)
-    has_fatsecret = bool(user.fatsecret_access_token and user.fatsecret_access_secret)
-    food_db_connected = has_nutrichat or has_fatsecret
     graph = _build_graph(user, meal_type, db)
 
     user_content = (
         f"User message: {text}\n\n"
         f"Context:\n"
         f"- meal_type: {meal_type}\n"
-        f"- food_db_connected: {str(food_db_connected).lower()}\n"
-        f"- food_db_source: {'nutrichat' if has_nutrichat else 'fatsecret' if has_fatsecret else 'none'}\n"
+        f"- food_db_connected: {str(has_nutrichat).lower()}\n"
         f"- current_time: {datetime.now().strftime('%H:%M')}"
     )
 
@@ -635,10 +576,9 @@ async def run_nutrition_agent(
         ],
         "meal_type": meal_type,
         "has_nutrichat": has_nutrichat,
-        "has_fatsecret": has_fatsecret,
         "food_description": "",
         "logged_items": [],
-        "fatsecret_entry_ids": [],
+        "entry_ids": [],
     }
 
     final_state = await graph.ainvoke(initial_state)

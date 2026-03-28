@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     shutdown_scheduler()
 
 
-app = FastAPI(title="Calorie Counter WhatsApp Bot", lifespan=lifespan)
+app = FastAPI(title="NutriBot WhatsApp Bot", lifespan=lifespan)
 
 
 
