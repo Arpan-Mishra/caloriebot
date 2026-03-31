@@ -83,7 +83,6 @@ async def log_food_entries_batch(
     nc_items = []
     for item in items:
         nc_item = {
-            "food_id": int(item["food_id"]),
             "food_name": item.get("food_name", ""),
             "number_of_units": float(item.get("number_of_units") or 1),
             "calories": float(item.get("calories") or 0),
@@ -91,6 +90,9 @@ async def log_food_entries_batch(
             "fat_g": float(item.get("fat_g") or 0),
             "carbs_g": float(item.get("carbs_g") or 0),
         }
+        # food_id is only present for items found via search, not LLM estimates
+        if item.get("food_id"):
+            nc_item["food_id"] = int(item["food_id"])
         # Only pass metric_serving_amount if present and non-zero;
         # the SDK defaults to 100 when omitted
         msa = float(item.get("metric_serving_amount") or 0)
