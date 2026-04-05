@@ -8,6 +8,15 @@ logger = logging.getLogger(__name__)
 GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
 
 _token_override: str | None = None
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    """Return a shared httpx client for connection reuse."""
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+    return _http_client
 
 
 def set_whatsapp_token(token: str) -> None:
@@ -34,29 +43,30 @@ async def send_text_message(to: str, text: str) -> dict:
         "type": "text",
         "text": {"body": text},
     }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-        return resp.json()
+    client = _get_http_client()
+    resp = await client.post(url, json=payload, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
 
 
 async def download_media(media_id: str) -> bytes:
     """Download a media file from WhatsApp Cloud API."""
     headers = {"Authorization": f"Bearer {_get_token()}"}
 
-    # Step 1: Get the download URL
-    async with httpx.AsyncClient() as client:
-        meta_resp = await client.get(
-            f"{GRAPH_API_BASE}/{media_id}",
-            headers=headers,
-        )
-        meta_resp.raise_for_status()
-        media_url = meta_resp.json()["url"]
+    client = _get_http_client()
 
-        # Step 2: Download the actual file
-        file_resp = await client.get(media_url, headers=headers)
-        file_resp.raise_for_status()
-        return file_resp.content
+    # Step 1: Get the download URL
+    meta_resp = await client.get(
+        f"{GRAPH_API_BASE}/{media_id}",
+        headers=headers,
+    )
+    meta_resp.raise_for_status()
+    media_url = meta_resp.json()["url"]
+
+    # Step 2: Download the actual file
+    file_resp = await client.get(media_url, headers=headers)
+    file_resp.raise_for_status()
+    return file_resp.content
 
 
 def parse_webhook_payload(body: dict) -> list[dict]:

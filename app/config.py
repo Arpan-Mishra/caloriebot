@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    groq_api_key: str = ""
 
     fatsecret_consumer_key: str = ""
     fatsecret_consumer_secret: str = ""
