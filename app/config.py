@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     nutrichat_base_url: str = "https://nutrichat-production.up.railway.app"
 
+    mongodb_uri: str = ""
     database_url: str = "sqlite:///./calorie_bot.db"
     app_base_url: str = "http://localhost:8000"
     admin_secret: str = ""

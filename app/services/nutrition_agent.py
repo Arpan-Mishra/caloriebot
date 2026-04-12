@@ -64,6 +64,16 @@ from app.services import nutrichat_svc as nc_svc
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# Module-level checkpointer — set once at app startup via set_checkpointer()
+_checkpointer = None
+
+
+def set_checkpointer(checkpointer) -> None:
+    """Set the shared MongoDB checkpointer. Called once at app startup."""
+    global _checkpointer
+    _checkpointer = checkpointer
+    logger.info("Nutrition agent checkpointer configured: %s", type(checkpointer).__name__)
+
 
 # ---------------------------------------------------------------------------
 # Agent system prompt
@@ -310,6 +320,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
+# Mark the last tool for Anthropic prompt caching.
+# Everything up to and including this tool will be cached for 5 minutes.
+TOOL_SCHEMAS[-1]["cache_control"] = {"type": "ephemeral"}
+
 
 # ---------------------------------------------------------------------------
 # State schema
@@ -327,6 +341,35 @@ class NutritionAgentState(TypedDict):
     food_description: str
     logged_items: list
     entry_ids: list
+
+
+# ---------------------------------------------------------------------------
+# Message trimming
+# ---------------------------------------------------------------------------
+
+_MAX_CONTEXT_MESSAGES = 40
+
+
+def _trim_messages(messages: list) -> list:
+    """Keep the system prompt and the last N non-system messages.
+
+    Full history remains in the checkpoint; only the LLM call is bounded.
+    """
+    if not messages:
+        return messages
+
+    system_msgs = []
+    other_msgs = []
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            system_msgs = [msg]
+        else:
+            other_msgs.append(msg)
+
+    if len(other_msgs) > _MAX_CONTEXT_MESSAGES:
+        other_msgs = other_msgs[-_MAX_CONTEXT_MESSAGES:]
+
+    return system_msgs + other_msgs
 
 
 # ---------------------------------------------------------------------------
@@ -473,13 +516,14 @@ def _build_graph(user: User, meal_type: str, db: Session):
     # -----------------------------------------------------------------
 
     llm = ChatAnthropic(
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-6",
         api_key=settings.anthropic_api_key,
     ).bind_tools(TOOL_SCHEMAS)
 
     async def agent_node(state: NutritionAgentState) -> dict:
-        """Call the LLM with the current message history."""
-        response = await llm.ainvoke(state["messages"])
+        """Call the LLM with the current message history (trimmed for context window)."""
+        trimmed = _trim_messages(state["messages"])
+        response = await llm.ainvoke(trimmed)
         logger.debug(
             "Agent node: stop_reason=%s tool_calls=%d",
             getattr(response, "stop_reason", "?"),
@@ -539,7 +583,7 @@ def _build_graph(user: User, meal_type: str, db: Session):
     graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
     graph.add_edge("tools", "agent")
 
-    return graph.compile()
+    return graph.compile(checkpointer=_checkpointer)
 
 
 # ---------------------------------------------------------------------------
@@ -569,9 +613,22 @@ async def run_nutrition_agent(
         f"- current_time: {datetime.now().strftime('%H:%M')}"
     )
 
-    initial_state: NutritionAgentState = {
+    # Stable ID ensures add_messages deduplicates across checkpointed sessions
+    system_msg = SystemMessage(
+        content=[
+            {"type": "text", "text": AGENT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+        ],
+        id="system-prompt",
+    )
+
+    # Thread resets daily: user gets fresh context each day
+    today = date.today().isoformat()
+    thread_id = f"{user.id}_{today}"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    input_state: NutritionAgentState = {
         "messages": [
-            SystemMessage(content=AGENT_SYSTEM_PROMPT),
+            system_msg,
             HumanMessage(content=user_content),
         ],
         "meal_type": meal_type,
@@ -581,7 +638,7 @@ async def run_nutrition_agent(
         "entry_ids": [],
     }
 
-    final_state = await graph.ainvoke(initial_state)
+    final_state = await graph.ainvoke(input_state, config=config)
 
     # Extract the last plain-text AI message as the reply
     for message in reversed(final_state["messages"]):

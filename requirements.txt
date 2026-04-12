@@ -5,6 +5,7 @@ openai
 anthropic
 langchain-anthropic
 langgraph
+langgraph-checkpoint-mongodb
 fatsecret
 nutrichat @ git+https://github.com/Arpan-Mishra/NutriChat.git#subdirectory=nutrichat-python
 sqlalchemy

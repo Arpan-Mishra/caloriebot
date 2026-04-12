@@ -46,6 +46,7 @@ FATSECRET_CONSUMER_KEY=       # optional — only needed for FatSecret integrati
 FATSECRET_CONSUMER_SECRET=    # optional
 
 DATABASE_URL=sqlite:///./calorie_bot.db
+MONGODB_URI=                  # MongoDB connection string for LangGraph checkpointer (agent memory)
 
 ADMIN_SECRET=                 # arbitrary secret string used to authenticate admin endpoints
 ```
@@ -145,15 +146,6 @@ All fields are designed as future memory anchors — adding a LangGraph checkpoi
 | `logged_items` | `list[dict]` | `log_food_entries` tool | Per-item macros. **Memory anchor.** |
 | `fatsecret_entry_ids` | `list[str]` | `log_food_entries` tool | FatSecret diary IDs. **Memory anchor.** |
 
-#### Adding memory (future)
-
-```python
-from langgraph.checkpoint.sqlite import SqliteSaver
-saver = SqliteSaver.from_conn_string("./agent_memory.db")
-graph = graph_builder.compile(checkpointer=saver)
-config = {"configurable": {"thread_id": str(user.id)}}
-final_state = await graph.ainvoke(initial_state, config=config)
-```
 
 ### Tools
 
