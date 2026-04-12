@@ -49,11 +49,11 @@ async def lifespan(app: FastAPI):
         db.close()
 
     # Initialize MongoDB checkpointer for agent memory
-    from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
+    from langgraph.checkpoint.mongodb import MongoDBSaver
     from app.services import nutrition_agent
     checkpointer = None
     if settings.mongodb_uri:
-        checkpointer = AsyncMongoDBSaver.from_conn_string(settings.mongodb_uri)
+        checkpointer = MongoDBSaver.from_conn_string(settings.mongodb_uri)
         logger.info("MongoDB checkpointer initialized")
     else:
         logger.warning("MONGODB_URI not set — agent runs without persistent memory")
