@@ -49,19 +49,24 @@ async def lifespan(app: FastAPI):
         db.close()
 
     # Initialize MongoDB checkpointer for agent memory
-    from langgraph.checkpoint.mongodb import MongoDBSaver
     from app.services import nutrition_agent
-    checkpointer = None
+    mongo_client = None
     if settings.mongodb_uri:
-        checkpointer = MongoDBSaver.from_conn_string(settings.mongodb_uri)
+        from pymongo import MongoClient
+        from langgraph.checkpoint.mongodb import MongoDBSaver
+        mongo_client = MongoClient(settings.mongodb_uri)
+        checkpointer = MongoDBSaver(mongo_client)
+        nutrition_agent.set_checkpointer(checkpointer)
         logger.info("MongoDB checkpointer initialized")
     else:
         logger.warning("MONGODB_URI not set — agent runs without persistent memory")
-    nutrition_agent.set_checkpointer(checkpointer)
 
     yield
     # Shutdown
     shutdown_scheduler()
+    if mongo_client is not None:
+        mongo_client.close()
+        logger.info("MongoDB connection closed")
 
 
 app = FastAPI(title="NutriBot WhatsApp Bot", lifespan=lifespan)
