@@ -9,10 +9,14 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    groq_api_key: str = ""
 
     fatsecret_consumer_key: str = ""
     fatsecret_consumer_secret: str = ""
 
+    nutrichat_base_url: str = "https://nutrichat-production.up.railway.app"
+
+    mongodb_uri: str = ""
     database_url: str = "sqlite:///./calorie_bot.db"
     app_base_url: str = "http://localhost:8000"
     admin_secret: str = ""

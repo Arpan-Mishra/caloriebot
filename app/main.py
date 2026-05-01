@@ -47,12 +47,29 @@ async def lifespan(app: FastAPI):
             logger.info("Loaded WhatsApp token override from DB")
     finally:
         db.close()
+
+    # Initialize MongoDB checkpointer for agent memory
+    from app.services import nutrition_agent
+    mongo_client = None
+    if settings.mongodb_uri:
+        from pymongo import MongoClient
+        from langgraph.checkpoint.mongodb import MongoDBSaver
+        mongo_client = MongoClient(settings.mongodb_uri)
+        checkpointer = MongoDBSaver(mongo_client)
+        nutrition_agent.set_checkpointer(checkpointer)
+        logger.info("MongoDB checkpointer initialized")
+    else:
+        logger.warning("MONGODB_URI not set — agent runs without persistent memory")
+
     yield
     # Shutdown
     shutdown_scheduler()
+    if mongo_client is not None:
+        mongo_client.close()
+        logger.info("MongoDB connection closed")
 
 
-app = FastAPI(title="Calorie Counter WhatsApp Bot", lifespan=lifespan)
+app = FastAPI(title="NutriBot WhatsApp Bot", lifespan=lifespan)
 
 
 

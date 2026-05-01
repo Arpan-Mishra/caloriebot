@@ -5,9 +5,12 @@ openai
 anthropic
 langchain-anthropic
 langgraph
+langgraph-checkpoint-mongodb
 fatsecret
+nutrichat @ git+https://github.com/Arpan-Mishra/NutriChat.git#subdirectory=nutrichat-python
 sqlalchemy
 psycopg2-binary
 pydantic-settings
 apscheduler
+phonenumbers
 python-dotenv

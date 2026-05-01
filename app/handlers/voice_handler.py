@@ -1,11 +1,11 @@
 """
 Handle incoming voice/audio messages.
 
-1. Send an immediate acknowledgment so the user sees feedback before the slow work starts.
-2. Download audio bytes from WhatsApp.
-3. Transcribe with Whisper.
-4. Delegate to text_handler (which runs the nutrition agent).
+1. Send acknowledgment and download audio concurrently.
+2. Transcribe with Groq Whisper (fast) or OpenAI fallback.
+3. Delegate to text_handler (which runs the nutrition agent).
 """
+import asyncio
 import logging
 from sqlalchemy.orm import Session
 from app.services.whatsapp import download_media, send_text_message
@@ -16,29 +16,32 @@ logger = logging.getLogger(__name__)
 
 
 async def handle_voice(db: Session, phone_number: str, media_id: str, mime_type: str = "audio/ogg"):
-    # Send ack immediately — before any slow network/LLM work
-    await send_text_message(
+    # Send ack and download audio concurrently
+    ack_coro = send_text_message(
         phone_number,
         "🎙️ Voice note received! I'm transcribing and logging your meal — "
         "you'll get a full breakdown with macros and your daily total in just a moment! 📊",
     )
+    download_coro = download_media(media_id)
 
-    # Download
     try:
-        audio_bytes = await download_media(media_id)
-    except Exception as e:
-        logger.exception("Failed to download voice note (media_id=%s): %s", media_id, e)
-        await send_text_message(
-            phone_number, "Sorry, I couldn't download your voice note. Please try again."
-        )
+        _, audio_bytes = await asyncio.gather(ack_coro, download_coro)
+    except Exception:
+        logger.exception("Failed to download voice note (media_id=%s)", media_id)
+        try:
+            await send_text_message(
+                phone_number, "Sorry, I couldn't download your voice note. Please try again."
+            )
+        except Exception:
+            logger.exception("Failed to send error message to %s", phone_number)
         return
 
     # Transcribe
     try:
         transcribed_text = await transcribe_audio(audio_bytes, mime_type)
         logger.debug("[%s] Transcript: %r", phone_number, transcribed_text)
-    except Exception as e:
-        logger.exception("Failed to transcribe voice note (media_id=%s): %s", media_id, e)
+    except Exception:
+        logger.exception("Failed to transcribe voice note (media_id=%s)", media_id)
         await send_text_message(
             phone_number,
             "Sorry, I couldn't transcribe your voice note. Please try sending a text message instead.",

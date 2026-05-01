@@ -38,13 +38,17 @@ WHATSAPP_PHONE_NUMBER_ID=
 WHATSAPP_ACCESS_TOKEN=        # expires every 24h on Meta sandbox — regenerate in Meta Developer Console
 WHATSAPP_VERIFY_TOKEN=        # arbitrary secret string, must match what's set in Meta webhook config
 
-OPENAI_API_KEY=               # used only for Whisper transcription
+OPENAI_API_KEY=               # used for Whisper transcription (fallback if Groq unavailable)
 ANTHROPIC_API_KEY=            # used for all Claude calls
+GROQ_API_KEY=                 # optional — Groq Whisper for fast transcription (~10x faster than OpenAI)
 
 FATSECRET_CONSUMER_KEY=       # optional — only needed for FatSecret integration
 FATSECRET_CONSUMER_SECRET=    # optional
 
 DATABASE_URL=sqlite:///./calorie_bot.db
+MONGODB_URI=                  # MongoDB connection string for LangGraph checkpointer (agent memory)
+
+ADMIN_SECRET=                 # arbitrary secret string used to authenticate admin endpoints
 ```
 
 Config is cached via `@lru_cache` — restart the server after changing `.env`.
@@ -142,15 +146,6 @@ All fields are designed as future memory anchors — adding a LangGraph checkpoi
 | `logged_items` | `list[dict]` | `log_food_entries` tool | Per-item macros. **Memory anchor.** |
 | `fatsecret_entry_ids` | `list[str]` | `log_food_entries` tool | FatSecret diary IDs. **Memory anchor.** |
 
-#### Adding memory (future)
-
-```python
-from langgraph.checkpoint.sqlite import SqliteSaver
-saver = SqliteSaver.from_conn_string("./agent_memory.db")
-graph = graph_builder.compile(checkpointer=saver)
-config = {"configurable": {"thread_id": str(user.id)}}
-final_state = await graph.ainvoke(initial_state, config=config)
-```
 
 ### Tools
 
@@ -239,8 +234,11 @@ FastAPI application entry point.
 - **`GET /webhook`** — Meta webhook verification handshake
 - **`POST /webhook`** — receives WhatsApp events; fires `route_webhook` as background task
 - **`GET /health`** — health check
-- **`GET /connect/fatsecret`** — starts FatSecret OAuth; stores `oauth_token_secret` in `_oauth_secrets` in-memory dict
-- **`GET /connect/fatsecret/callback`** — exchanges verifier for access token; stores on `User`
+- **`GET /connect/fatsecret`** — starts FatSecret OAuth; stores `oauth_token` + `oauth_token_secret` in `OAuthTemp` DB table (survives restarts)
+- **`GET /connect/fatsecret/callback`** — exchanges verifier for access token; deletes `OAuthTemp` row; stores tokens on `User`
+- **`GET /admin/token-status`** — diagnostic: returns active token suffix/length and whether DB override is set; requires `secret` query param
+- **`GET /admin/clear-token-override`** — removes DB token override so env var takes effect; requires `secret` query param
+- **`POST /admin/update-whatsapp-token`** — updates token in DB + in-memory at runtime; requires `secret` in JSON body
 
 ---
 
@@ -339,8 +337,12 @@ Cron expressions: standard 5-field `minute hour day month day_of_week`.
 | `MealEntry` | `meal_entries` | `user_id`, `meal_type`, `food_description`, `calories`, `protein_g`, `fat_g`, `carbs_g`, `logged_at`, `fatsecret_entry_id` |
 | `ConversationState` | `conversation_states` | `user_id` (unique), `state`, `pending_data` — exists in DB but no longer used for multi-turn flows |
 | `Reminder` | `reminders` | `user_id`, `label`, `cron_expression`, `message`, `active` |
+| `SystemConfig` | `system_config` | `key` (primary key), `value` — runtime-configurable app settings |
+| `OAuthTemp` | `oauth_temp` | `oauth_token` (unique), `oauth_token_secret`, `phone_number` — transient FatSecret OAuth state; rows deleted after callback |
 
 `MealEntry.fatsecret_entry_id` stores comma-separated FatSecret entry IDs.
+
+`OAuthTemp` replaced the original in-memory `_oauth_secrets` dict so OAuth flows survive server restarts.
 
 ---
 

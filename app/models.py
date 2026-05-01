@@ -11,6 +11,7 @@ class User(Base):
     phone_number = Column(String, unique=True, nullable=False, index=True)
     fatsecret_access_token = Column(String, nullable=True)
     fatsecret_access_secret = Column(String, nullable=True)
+    nutrichat_api_key = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     meal_entries = relationship("MealEntry", back_populates="user")

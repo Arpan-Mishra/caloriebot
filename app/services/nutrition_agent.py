@@ -28,10 +28,6 @@ passing a ``config={"configurable": {"thread_id": user.id}}`` to ``ainvoke``.
                         by the graph. Stored so a checkpointer can reconstruct
                         which meal a past session belonged to.
 
-  has_fatsecret       – Snapshot of whether FatSecret tokens were present at
-                        invocation. Stored so replays / memory reads reflect
-                        the context under which logging happened.
-
   food_description    – Populated by the log_food_entries tool. Short human-
                         readable description of the full meal that was logged
                         (e.g. "Dal rice with salad"). Designed as a memory
@@ -40,12 +36,12 @@ passing a ``config={"configurable": {"thread_id": user.id}}`` to ``ainvoke``.
 
   logged_items        – Populated by the log_food_entries tool. List of dicts
                         with food_name, calories, protein_g, fat_g, carbs_g for
-                        every item that was confirmed (FatSecret or estimated).
+                        every item that was confirmed (NutriChat or estimated).
                         Designed as a memory anchor for per-item recall.
 
-  fatsecret_entry_ids – Populated by the log_food_entries tool. FatSecret diary
+  entry_ids           – Populated by the log_food_entries tool. NutriChat diary
                         entry IDs as strings. Lets future memory/audit code
-                        cross-reference local DB records with FatSecret entries.
+                        cross-reference local DB records with NutriChat entries.
 """
 
 import asyncio
@@ -63,10 +59,20 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import MealEntry, User
-from app.services import fatsecret as fs_svc
+from app.services import nutrichat_svc as nc_svc
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Module-level checkpointer — set once at app startup via set_checkpointer()
+_checkpointer = None
+
+
+def set_checkpointer(checkpointer) -> None:
+    """Set the shared MongoDB checkpointer. Called once at app startup."""
+    global _checkpointer
+    _checkpointer = checkpointer
+    logger.info("Nutrition agent checkpointer configured: %s", type(checkpointer).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +98,7 @@ Example: "I had pintola protein oats 50g and 2 boiled eggs"
 
 ---
 
-## PHASE 2 — Search FatSecret (parallel, fatsecret_connected = true only)
+## PHASE 2 — Search food database (parallel, food_db_connected = true only)
 
 Call search_food for EVERY item IN PARALLEL (all in one response turn).
 Use the search_query from Phase 1 — never include quantities.
@@ -141,7 +147,7 @@ Work through each case:
 - "1 glass" milk/juice ≈ 200ml
 
 **No quantity stated at all:**
-- Use number_of_units = 1.0 (one standard serving as listed in FatSecret)
+- Use number_of_units = 1.0 (one standard serving as listed in the food database)
 
 **Sanity check — before passing to log_food_entries:**
 - number_of_units should almost always be between 0.1 and 20
@@ -156,7 +162,7 @@ Work through each case:
 
 **3d. Carry serving_number_of_units forward:**
 Copy the `serving_number_of_units` value from the search result directly into the log_food_entries item.
-Do not modify it — the backend needs it to correctly convert your servings count into FatSecret's native unit.
+Do not modify it — the backend needs it to correctly convert your servings count into the food database's native unit.
 
 ---
 
@@ -187,13 +193,13 @@ Use the log_food_entries response for 📊. Use get_today_totals for 📅.
   • Fat:      {X.X} g
 
 🔍 *Breakdown:*
-  • {FatSecret food name} ({number_of_units × metric_serving_amount}{unit}, e.g. "200g"): {cal} kcal | {pro}p / {carb}c / {fat}f
+  • {food name} ({number_of_units × metric_serving_amount}{unit}, e.g. "200g"): {cal} kcal | {pro}p / {carb}c / {fat}f
 
 📅 *Today's total:* {X} kcal | {pro}p / {carb}c / {fat}f
 
 ---
 
-## If fatsecret_connected is false
+## If food_db_connected is false
 
 Skip Phases 2–3. Estimate macros from your knowledge, apply any quantity scaling, then call log_food_entries with your estimates (omit food_id/serving_id, set number_of_units=1.0)."""
 
@@ -206,7 +212,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "search_food",
         "description": (
-            "Search FatSecret for a food item. Returns up to 5 matches sorted by name similarity. "
+            "Search the food database for a food item. Returns up to 5 matches sorted by name similarity. "
             "Each result includes: food_id, food_name, serving_id, serving_description, "
             "metric_serving_amount (numeric), metric_serving_unit (g/ml/oz), "
             "calories_per_serving, protein_g_per_serving, fat_g_per_serving, carbs_g_per_serving, "
@@ -232,7 +238,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "log_food_entries",
         "description": (
             "Log selected food entries to the diary. Call once after searching, "
-            "with all items. Saves to FatSecret (if connected) and local database."
+            "with all items. Saves to food database (if connected) and local database."
         ),
         "input_schema": {
             "type": "object",
@@ -249,18 +255,18 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "properties": {
                             "food_id": {
                                 "type": "string",
-                                "description": "FatSecret food_id (omit when estimating)",
+                                "description": "Food database food_id (omit when estimating)",
                             },
                             "serving_id": {
                                 "type": "string",
-                                "description": "FatSecret serving_id (omit when estimating)",
+                                "description": "Food database serving_id (omit when estimating)",
                             },
                             "serving_number_of_units": {
                                 "type": "number",
                                 "description": (
                                     "Copy the serving_number_of_units value from the search_food result unchanged. "
-                                    "The backend uses this to convert agent servings → FatSecret's native unit. "
-                                    "Omit when estimating (no FatSecret match)."
+                                    "The backend uses this to convert agent servings into the food database's native unit. "
+                                    "Omit when estimating (no food database match)."
                                 ),
                             },
                             "number_of_units": {
@@ -314,6 +320,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
+# Mark the last tool for Anthropic prompt caching.
+# Everything up to and including this tool will be cached for 5 minutes.
+TOOL_SCHEMAS[-1]["cache_control"] = {"type": "ephemeral"}
+
 
 # ---------------------------------------------------------------------------
 # State schema
@@ -326,11 +336,40 @@ class NutritionAgentState(TypedDict):
     """
     messages: Annotated[list, add_messages]
     meal_type: str
-    has_fatsecret: bool
+    has_nutrichat: bool
     # Populated by log_food_entries tool — designed as future memory anchors
     food_description: str
     logged_items: list
-    fatsecret_entry_ids: list
+    entry_ids: list
+
+
+# ---------------------------------------------------------------------------
+# Message trimming
+# ---------------------------------------------------------------------------
+
+_MAX_CONTEXT_MESSAGES = 40
+
+
+def _trim_messages(messages: list) -> list:
+    """Keep the system prompt and the last N non-system messages.
+
+    Full history remains in the checkpoint; only the LLM call is bounded.
+    """
+    if not messages:
+        return messages
+
+    system_msgs = []
+    other_msgs = []
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            system_msgs = [msg]
+        else:
+            other_msgs.append(msg)
+
+    if len(other_msgs) > _MAX_CONTEXT_MESSAGES:
+        other_msgs = other_msgs[-_MAX_CONTEXT_MESSAGES:]
+
+    return system_msgs + other_msgs
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +387,8 @@ def _build_graph(user: User, meal_type: str, db: Session):
     ``graph.compile(checkpointer=…)`` and supply
     ``config={"configurable": {"thread_id": str(user.id)}}`` to ``ainvoke``.
     """
-    has_fatsecret = bool(user.fatsecret_access_token and user.fatsecret_access_secret)
+    has_nutrichat = bool(user.nutrichat_api_key)
+    has_food_db = has_nutrichat
 
     # Accumulates state patches from tools so the tools node can return them
     # as proper graph state updates. Only log_food_entries ever appends here.
@@ -360,14 +400,9 @@ def _build_graph(user: User, meal_type: str, db: Session):
 
     async def _handle_search_food(args: dict) -> str:
         query: str = args["query"]
-        if not has_fatsecret:
-            return json.dumps({"error": "FatSecret not connected", "results": []})
-        results = await asyncio.to_thread(
-            fs_svc.search_food,
-            query,
-            user.fatsecret_access_token,
-            user.fatsecret_access_secret,
-        )
+        if not has_nutrichat:
+            return json.dumps({"error": "No food database connected", "results": []})
+        results = await nc_svc.search_food(query, user.nutrichat_api_key)
         logger.debug("search_food %r → %d results", query, len(results))
         return json.dumps({"results": results})
 
@@ -375,34 +410,21 @@ def _build_graph(user: User, meal_type: str, db: Session):
         food_description: str = args["food_description"]
         items: list[dict] = args["items"]
 
-        fs_ids: list[str] = []
+        entry_ids: list[str] = []
         confirmed_items: list[dict] = []
 
-        if has_fatsecret:
-            fs_items = [i for i in items if i.get("food_id") and i.get("serving_id")]
-            estimate_items = [i for i in items if not (i.get("food_id") and i.get("serving_id"))]
-
-            if fs_items:
-                fs_results = await asyncio.to_thread(
-                    fs_svc.log_food_entries_batch,
-                    fs_items,
-                    meal_type,
-                    user.fatsecret_access_token,
-                    user.fatsecret_access_secret,
-                )
-                for r in fs_results:
-                    fs_ids.append(r["entry_id"])
-                    confirmed_items.append(r)
-
-            for item in estimate_items:
-                confirmed_items.append({
-                    "food_name": item["food_name"],
-                    "calories": float(item.get("calories") or 0),
-                    "protein_g": float(item.get("protein_g") or 0),
-                    "fat_g": float(item.get("fat_g") or 0),
-                    "carbs_g": float(item.get("carbs_g") or 0),
-                })
+        if has_nutrichat:
+            # Route ALL items through NutriChat (both searched and estimates)
+            nc_results = await nc_svc.log_food_entries_batch(
+                items,
+                meal_type,
+                user.nutrichat_api_key,
+            )
+            for r in nc_results:
+                entry_ids.append(r["entry_id"])
+                confirmed_items.append(r)
         else:
+            # No food DB — local-only estimates
             for item in items:
                 confirmed_items.append({
                     "food_name": item["food_name"],
@@ -426,7 +448,7 @@ def _build_graph(user: User, meal_type: str, db: Session):
             fat_g=total_fat,
             carbs_g=total_carb,
             logged_at=datetime.utcnow(),
-            fatsecret_entry_id=",".join(fs_ids) if fs_ids else None,
+            fatsecret_entry_id=",".join(entry_ids) if entry_ids else None,
         )
         db.add(entry)
         db.commit()
@@ -441,7 +463,7 @@ def _build_graph(user: User, meal_type: str, db: Session):
         _tool_state_patches.append({
             "food_description": food_description,
             "logged_items": confirmed_items,
-            "fatsecret_entry_ids": fs_ids,
+            "entry_ids": entry_ids,
         })
 
         return json.dumps({
@@ -457,13 +479,8 @@ def _build_graph(user: User, meal_type: str, db: Session):
         })
 
     async def _handle_get_today_totals(_args: dict) -> str:
-        if has_fatsecret:
-            # FatSecret is the source of truth — fetch what's actually in the diary
-            totals = await asyncio.to_thread(
-                fs_svc.get_food_entries_today,
-                user.fatsecret_access_token,
-                user.fatsecret_access_secret,
-            )
+        if has_nutrichat:
+            totals = await nc_svc.get_food_entries_today(user.nutrichat_api_key)
         else:
             # Fallback: sum today's local DB entries (estimated macros only)
             today = date.today()
@@ -499,13 +516,14 @@ def _build_graph(user: User, meal_type: str, db: Session):
     # -----------------------------------------------------------------
 
     llm = ChatAnthropic(
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-6",
         api_key=settings.anthropic_api_key,
     ).bind_tools(TOOL_SCHEMAS)
 
     async def agent_node(state: NutritionAgentState) -> dict:
-        """Call the LLM with the current message history."""
-        response = await llm.ainvoke(state["messages"])
+        """Call the LLM with the current message history (trimmed for context window)."""
+        trimmed = _trim_messages(state["messages"])
+        response = await llm.ainvoke(trimmed)
         logger.debug(
             "Agent node: stop_reason=%s tool_calls=%d",
             getattr(response, "stop_reason", "?"),
@@ -565,7 +583,7 @@ def _build_graph(user: User, meal_type: str, db: Session):
     graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
     graph.add_edge("tools", "agent")
 
-    return graph.compile()
+    return graph.compile(checkpointer=_checkpointer)
 
 
 # ---------------------------------------------------------------------------
@@ -581,33 +599,46 @@ async def run_nutrition_agent(
     """Run the LangGraph nutrition agent and return the formatted WhatsApp reply.
 
     Builds the graph, invokes it with an initial state, and extracts the final
-    AI text response. FatSecret + local DB persistence is handled inside the
+    AI text response. NutriChat + local DB persistence is handled inside the
     graph's log_food_entries tool handler.
     """
-    has_fatsecret = bool(user.fatsecret_access_token and user.fatsecret_access_secret)
+    has_nutrichat = bool(user.nutrichat_api_key)
     graph = _build_graph(user, meal_type, db)
 
     user_content = (
         f"User message: {text}\n\n"
         f"Context:\n"
         f"- meal_type: {meal_type}\n"
-        f"- fatsecret_connected: {str(has_fatsecret).lower()}\n"
+        f"- food_db_connected: {str(has_nutrichat).lower()}\n"
         f"- current_time: {datetime.now().strftime('%H:%M')}"
     )
 
-    initial_state: NutritionAgentState = {
+    # Stable ID ensures add_messages deduplicates across checkpointed sessions
+    system_msg = SystemMessage(
+        content=[
+            {"type": "text", "text": AGENT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+        ],
+        id="system-prompt",
+    )
+
+    # Thread resets daily: user gets fresh context each day
+    today = date.today().isoformat()
+    thread_id = f"{user.id}_{today}"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    input_state: NutritionAgentState = {
         "messages": [
-            SystemMessage(content=AGENT_SYSTEM_PROMPT),
+            system_msg,
             HumanMessage(content=user_content),
         ],
         "meal_type": meal_type,
-        "has_fatsecret": has_fatsecret,
+        "has_nutrichat": has_nutrichat,
         "food_description": "",
         "logged_items": [],
-        "fatsecret_entry_ids": [],
+        "entry_ids": [],
     }
 
-    final_state = await graph.ainvoke(initial_state)
+    final_state = await graph.ainvoke(input_state, config=config)
 
     # Extract the last plain-text AI message as the reply
     for message in reversed(final_state["messages"]):
