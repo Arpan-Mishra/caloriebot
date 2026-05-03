@@ -641,6 +641,7 @@ async def run_nutrition_agent(
     final_state = await graph.ainvoke(input_state, config=config)
 
     # Extract the last plain-text AI message as the reply
+    import re as _re
     for message in reversed(final_state["messages"]):
         if (
             isinstance(message, AIMessage)
@@ -648,7 +649,8 @@ async def run_nutrition_agent(
             and message.content.strip()
             and not message.tool_calls
         ):
-            return message.content
+            reply = _re.sub(r'^##\s*PHASE\s*\d+[^\n]*\n+', '', message.content, flags=_re.IGNORECASE).strip()
+            return reply
 
     logger.warning("Agent produced no final text response for user_id=%d", user.id)
     return "Meal logged!"
