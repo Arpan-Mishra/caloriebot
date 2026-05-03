@@ -12,11 +12,14 @@ class User(Base):
     fatsecret_access_token = Column(String, nullable=True)
     fatsecret_access_secret = Column(String, nullable=True)
     nutrichat_api_key = Column(String, nullable=True)
+    # IANA timezone name; overrides phone-based inference when set
+    timezone = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     meal_entries = relationship("MealEntry", back_populates="user")
     conversation_state = relationship("ConversationState", back_populates="user", uselist=False)
     reminders = relationship("Reminder", back_populates="user")
+    telegram_user = relationship("TelegramUser", back_populates="user", uselist=False)
 
 
 class MealEntry(Base):
@@ -57,6 +60,8 @@ class Reminder(Base):
     cron_expression = Column(String, nullable=False)
     message = Column(Text, nullable=False)
     active = Column(Boolean, default=True)
+    # "whatsapp" or "telegram"; NULL treated as "whatsapp" for backward compat
+    platform = Column(String, nullable=True)
 
     user = relationship("User", back_populates="reminders")
 
@@ -69,6 +74,27 @@ class SystemConfig(Base):
     key = Column(String, primary_key=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TelegramUser(Base):
+    """Telegram-specific identity side table.
+
+    Every Telegram user gets a backing User row (phone_number='tg:<chat_id>') so
+    MealEntry, Reminder, and the nutrition agent work without schema changes.
+    This table holds Telegram-only fields.
+    """
+
+    __tablename__ = "telegram_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    chat_id = Column(String, unique=True, nullable=False, index=True)
+    username = Column(String, nullable=True)
+    language_code = Column(String, nullable=True)
+    timezone = Column(String, default="UTC", nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="telegram_user")
 
 
 class OAuthTemp(Base):

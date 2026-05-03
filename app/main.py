@@ -25,6 +25,7 @@ logging.config.dictConfig({
 })
 from app.database import init_db, get_db, SessionLocal
 from app.handlers.webhook import route_webhook
+from app.handlers.telegram_handler import route_telegram_webhook
 from app.services.scheduler import start_scheduler, shutdown_scheduler
 from app.services.whatsapp import send_text_message
 
@@ -32,10 +33,30 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _run_migrations():
+    """Add columns introduced after initial schema creation (SQLite-safe)."""
+    from sqlalchemy import text
+    from app.database import engine
+
+    migrations = [
+        "ALTER TABLE users ADD COLUMN timezone TEXT",
+        "ALTER TABLE reminders ADD COLUMN platform TEXT",
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+                logger.info("Migration applied: %s", stmt)
+            except Exception:
+                pass  # column already exists
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     init_db()
+    _run_migrations()
     db = SessionLocal()
     try:
         start_scheduler(db)
@@ -100,6 +121,43 @@ async def receive_webhook(request: Request):
     import asyncio
     asyncio.create_task(_handle())
     return {"status": "ok"}
+
+
+@app.post("/telegram/webhook")
+async def receive_telegram_webhook(request: Request):
+    """Receive and process incoming Telegram updates."""
+    # Verify secret token header when configured
+    if settings.telegram_webhook_secret:
+        token_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if token_header != settings.telegram_webhook_secret:
+            raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
+    body = await request.json()
+
+    async def _handle():
+        db = SessionLocal()
+        try:
+            await route_telegram_webhook(body, db)
+        finally:
+            db.close()
+
+    import asyncio
+    asyncio.create_task(_handle())
+    return {"status": "ok"}
+
+
+@app.get("/admin/telegram/set-webhook")
+async def telegram_set_webhook(secret: str, url: str = ""):
+    """Register the Telegram webhook URL with Telegram's Bot API."""
+    if not settings.admin_secret or secret != settings.admin_secret:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+    if not settings.telegram_bot_token:
+        raise HTTPException(status_code=503, detail="TELEGRAM_BOT_TOKEN not configured")
+
+    webhook_url = url or f"{settings.app_base_url.rstrip('/')}/telegram/webhook"
+    from app.services.telegram_messenger import set_webhook
+    result = await set_webhook(webhook_url, secret_token=settings.telegram_webhook_secret)
+    return {"webhook_url": webhook_url, "telegram_response": result}
 
 
 @app.get("/health")

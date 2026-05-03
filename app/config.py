@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     app_base_url: str = "http://localhost:8000"
     admin_secret: str = ""
 
+    telegram_bot_token: str = ""
+    telegram_webhook_secret: str = ""
+
     class Config:
         env_file = ".env"
 

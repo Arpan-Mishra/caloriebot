@@ -40,9 +40,19 @@ def _tz_from_phone(phone_number: str) -> ZoneInfo:
     return _FALLBACK_TZ
 
 
-def _infer_meal_type(phone_number: str) -> str:
+def _resolve_tz(user, phone_number: str) -> ZoneInfo:
+    """Return user's timezone. Prefers user.timezone (set via /timezone), falls back to phone inference."""
+    if user is not None and getattr(user, "timezone", None):
+        try:
+            return ZoneInfo(user.timezone)
+        except Exception:
+            pass
+    return _tz_from_phone(phone_number)
+
+
+def _infer_meal_type(phone_number: str, user=None) -> str:
     """Infer meal type from current time in the user's timezone."""
-    tz = _tz_from_phone(phone_number)
+    tz = _resolve_tz(user, phone_number)
     hour = datetime.now(tz).hour
     if 5 <= hour < 11:
         return "breakfast"
@@ -82,7 +92,7 @@ def _get_or_create_state(db: Session, user: User) -> ConversationState:
 
 
 def _daily_summary(db: Session, user: User, phone_number: str) -> str:
-    today = datetime.now(_tz_from_phone(phone_number)).date()
+    today = datetime.now(_resolve_tz(user, phone_number)).date()
     entries = (
         db.query(MealEntry)
         .filter(
@@ -217,6 +227,29 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
     user, is_new = _get_or_create_user(db, phone_number)
     _get_or_create_state(db, user)
 
+    # /timezone command — must be after user creation so we can persist the setting
+    if text.strip().lower().startswith("/timezone"):
+        tz_name = text.strip()[len("/timezone"):].strip()
+        if not tz_name:
+            await send_text_message(
+                phone_number,
+                "Usage: /timezone Asia/Kolkata\n\nExamples: Asia/Kolkata, Europe/London, America/New_York",
+            )
+            return
+        try:
+            ZoneInfo(tz_name)
+        except Exception:
+            await send_text_message(
+                phone_number,
+                f"Unknown timezone '{tz_name}'.\nUse a valid IANA name, e.g. Asia/Kolkata, Europe/London, America/New_York.",
+            )
+            return
+        user.timezone = tz_name
+        db.commit()
+        logger.info("[%s] Timezone set to %s", phone_number, tz_name)
+        await send_text_message(phone_number, f"✅ Timezone set to {tz_name}.")
+        return
+
     if is_new:
         await send_text_message(
             phone_number,
@@ -259,7 +292,7 @@ async def handle_text(db: Session, phone_number: str, text: str, ack_sent: bool 
 
     # Food logging via the nutrition agent
     # Check if user explicitly mentioned a meal type in the message
-    meal_type = _infer_meal_type(phone_number)
+    meal_type = _infer_meal_type(phone_number, user=user)
     text_lower = text.strip().lower()
     for mt in ("breakfast", "lunch", "dinner", "snack"):
         if mt in text_lower:
@@ -302,7 +335,7 @@ async def _handle_delete(db: Session, user: User, phone_number: str, text: str):
     from app.services.fatsecret import delete_food_entries as fs_delete_food_entries
 
     target = _parse_delete_target(text)
-    today = datetime.now(_tz_from_phone(phone_number)).date()
+    today = datetime.now(_resolve_tz(user, phone_number)).date()
     nc_meal_type = target["meal_type"] if target["scope"] == "meal" else None
     label = nc_meal_type or "today"
 
@@ -375,12 +408,13 @@ async def _handle_reminder(db: Session, user: User, phone_number: str, text: str
         cron_expression=config.cron_expression,
         message=config.message,
         active=True,
+        platform="whatsapp",
     )
     db.add(reminder)
     db.commit()
     db.refresh(reminder)
 
-    add_reminder_job(reminder.id, user.phone_number, config.cron_expression, config.message)
+    add_reminder_job(reminder.id, user.phone_number, config.cron_expression, config.message, platform="whatsapp")
 
     await send_text_message(
         phone_number,
