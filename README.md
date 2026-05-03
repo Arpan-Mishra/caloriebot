@@ -2,7 +2,7 @@
 
 A WhatsApp and Telegram bot that logs meals and tracks daily nutrition via voice or text. Powered by Claude (Anthropic) for food parsing and intent detection, NutriChat for an accurate food database and diary, and Groq/OpenAI Whisper for voice transcription.
 
-> **Try it out:** [t.me/YOUR_BOT_USERNAME](https://t.me/YOUR_BOT_USERNAME)
+> **Try it out:** [t.me/@Calorie_TrackingBot](https://t.me/Calorie_TrackingBot)
 
 ---
 
