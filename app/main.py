@@ -39,6 +39,7 @@ def _run_migrations():
     from app.database import engine
 
     migrations = [
+        "ALTER TABLE users ADD COLUMN nutrichat_api_key TEXT",
         "ALTER TABLE users ADD COLUMN timezone TEXT",
         "ALTER TABLE reminders ADD COLUMN platform TEXT",
     ]

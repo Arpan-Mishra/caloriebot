@@ -1,9 +1,9 @@
 """
 Handle incoming Telegram webhook updates.
 
-Mirrors the WhatsApp handler stack but with a Telegram-specific messenger
-and the TelegramUser side table for identity. The nutrition agent,
-transcription, and intent detection are reused unchanged.
+Telegram bot is standalone — no NutriChat/FatSecret. Macros are estimated
+by the LLM agent and stored in local DB only.
+Nutrition agent, transcription, and intent detection reused unchanged.
 """
 import asyncio
 import logging
@@ -12,11 +12,9 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.models import User, MealEntry, TelegramUser, Reminder
 from app.services import nutrition as nutrition_svc
 from app.services import nutrition_agent
-from app.services import nutrichat_svc as nc_svc
 from app.services.transcription import transcribe_audio
 from app.services.telegram_messenger import (
     download_media,
@@ -124,7 +122,6 @@ async def _handle_delete(
     chat_id: str,
     text: str,
 ):
-    """Delete meal entries for a meal or the whole day. NutriChat is the source of truth."""
     text_lower = text.lower()
     meal_type: str | None = None
     for meal in ("breakfast", "lunch", "dinner", "snack"):
@@ -135,15 +132,6 @@ async def _handle_delete(
     today = datetime.now(_get_tz(tg_user)).date()
     label = meal_type or "today"
 
-    nc_deleted = 0
-    if user.nutrichat_api_key:
-        nc_deleted = await nc_svc.delete_food_entries(
-            user.nutrichat_api_key,
-            meal_type=meal_type,
-            target_date=today.isoformat(),
-        )
-        logger.info("[tg:%s] Deleted %d NutriChat diary entries", chat_id, nc_deleted)
-
     query = db.query(MealEntry).filter(
         MealEntry.user_id == user.id,
         MealEntry.logged_at >= datetime(today.year, today.month, today.day),
@@ -151,23 +139,21 @@ async def _handle_delete(
     if meal_type:
         query = query.filter(MealEntry.meal_type == meal_type)
     entries = query.all()
-    db_count = len(entries)
+    count = len(entries)
     for entry in entries:
         db.delete(entry)
     db.commit()
-    logger.info("[tg:%s] Deleted %d local MealEntry rows", chat_id, db_count)
+    logger.info("[tg:%s] Deleted %d MealEntry rows", chat_id, count)
 
-    total_deleted = nc_deleted or db_count
-    if total_deleted == 0:
+    if count == 0:
         await send_text_message(chat_id, f"No entries found for {label}.")
         return
 
-    plural = "s" if total_deleted != 1 else ""
+    plural = "s" if count != 1 else ""
     if meal_type:
-        msg = f"🗑️ Deleted {meal_type.capitalize()} entries ({total_deleted} item{plural})."
+        await send_text_message(chat_id, f"🗑️ Deleted {meal_type.capitalize()} entries ({count} item{plural}).")
     else:
-        msg = f"🗑️ Deleted all entries for today ({total_deleted} item{plural})."
-    await send_text_message(chat_id, msg)
+        await send_text_message(chat_id, f"🗑️ Deleted all entries for today ({count} item{plural}).")
 
 
 async def _handle_reminder(db: Session, user: User, chat_id: str, text: str):
@@ -213,7 +199,6 @@ async def handle_text_telegram(
     logger.debug("[tg:%s] Incoming text: %r", chat_id, text)
     text_lower = text.strip().lower()
 
-    # /start and /info show the same help message
     if text_lower in ("/start", "/info"):
         await send_text_message(
             chat_id,
@@ -222,7 +207,7 @@ async def handle_text_telegram(
             "Just tell me what you ate in plain text or send a voice note:\n"
             "  • \"2 eggs and toast\"\n"
             "  • \"100g chicken breast with rice\"\n"
-            "I'll look up the nutrition data and log it to your diary.\n\n"
+            "I'll estimate the nutrition and log it to your diary.\n\n"
             "*Daily summary*\n"
             "Ask for your totals any time:\n"
             "  • \"What's my total today?\"\n"
@@ -231,29 +216,13 @@ async def handle_text_telegram(
             "Set meal reminders in natural language:\n"
             "  • \"Remind me every day at 8pm to log dinner\"\n\n"
             "*Commands*\n"
-            "  • /connect — link your NutriChat account\n"
             "  • /timezone — set your timezone (e.g. `/timezone Asia/Kolkata`)\n"
             "  • /info — show this message\n\n"
             "*Deleting entries*\n"
             "Remove logged entries for a meal or the whole day:\n"
             "  • \"delete lunch\"\n"
             "  • \"delete today\"\n"
-            "  • \"clear my breakfast\"\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "*Connecting NutriChat (optional)*\n"
-            "Link your NutriChat account to sync meals and get accurate nutrition data.\n\n"
-            "Send: `link nutrichat_live_YOUR_API_KEY`\n\n"
-            "Your API key is in the NutriChat app settings.",
-        )
-        return
-
-    # /connect
-    if text_lower == "/connect":
-        await send_text_message(
-            chat_id,
-            "To connect your NutriChat account, send:\n"
-            "  `link nutrichat_live_YOUR_API_KEY`\n\n"
-            "Your API key is in the NutriChat app settings.",
+            "  • \"clear my breakfast\"",
         )
         return
 
@@ -261,7 +230,10 @@ async def handle_text_telegram(
     if text_lower.startswith("/timezone"):
         tz_name = text.strip()[len("/timezone"):].strip()
         if not tz_name:
-            await send_text_message(chat_id, "Usage: `/timezone Asia/Kolkata`\n\nExamples: `Asia/Kolkata`, `Europe/London`, `America/New_York`")
+            await send_text_message(
+                chat_id,
+                "Usage: `/timezone Asia/Kolkata`\n\nExamples: `Asia/Kolkata`, `Europe/London`, `America/New_York`",
+            )
             return
         try:
             ZoneInfo(tz_name)
@@ -275,41 +247,6 @@ async def handle_text_telegram(
         db.commit()
         logger.info("[tg:%s] Timezone set to %s", chat_id, tz_name)
         await send_text_message(chat_id, f"✅ Timezone set to {tz_name}.")
-        return
-
-    # NutriChat key linking: "link nutrichat_live_xxx"
-    if text_lower.startswith("link ") and "nutrichat" in text_lower:
-        from nutrichat import NutriChatClient, AuthError as NCAuthError
-
-        api_key = text.strip().split(None, 1)[1].strip()
-        if not api_key.startswith("nutrichat_live_"):
-            await send_text_message(chat_id, "Invalid key. It should start with 'nutrichat_live_'.")
-            return
-
-        nc_settings = get_settings()
-        try:
-            async with NutriChatClient(api_key=api_key, base_url=nc_settings.nutrichat_base_url) as client:
-                await client.get_today_totals()
-        except NCAuthError:
-            await send_text_message(
-                chat_id,
-                "Invalid or expired API key. Generate a new one in the NutriChat app.",
-            )
-            return
-        except Exception:
-            logger.exception("[tg:%s] NutriChat key validation failed", chat_id)
-            await send_text_message(chat_id, "Could not verify key. Try again later.")
-            return
-
-        user.nutrichat_api_key = api_key
-        db.commit()
-        logger.info("[tg:%s] NutriChat API key linked", chat_id)
-        await send_text_message(
-            chat_id,
-            "✅ Linked! Your NutriChat app and this bot are now synced.\n\n"
-            "Going forward I'll log all your meals directly to your NutriChat diary. "
-            "Just tell me what you ate!",
-        )
         return
 
     # Concurrent intent detection
@@ -331,7 +268,7 @@ async def handle_text_telegram(
         await _handle_delete(db, user, tg_user, chat_id, text)
         return
 
-    # Food logging
+    # Food logging — LLM estimates only (no external food DB on Telegram)
     if not ack_sent:
         await send_text_message(
             chat_id,
@@ -414,14 +351,11 @@ async def route_telegram_webhook(body: dict, db: Session):
                 chat_id,
                 "👋 Welcome to NutriBot!\n\n"
                 "I track your meals and macros automatically.\n\n"
-                "Just tell me what you ate — I'll log the nutrition for you.\n\n"
-                "To sync with the NutriChat app and get accurate food database lookups, send:\n"
-                "  `link nutrichat_live_YOUR_API_KEY`\n\n"
+                "Just tell me what you ate — I'll estimate the nutrition and log it.\n\n"
                 "Set your timezone so meal times are recognised correctly:\n"
                 "  `/timezone Asia/Kolkata`\n\n"
                 "Send /info for a full list of commands.",
             )
-            # If first message is /start, the welcome above is sufficient
             if msg.get("type") == "text" and msg.get("text", "").strip().lower() == "/start":
                 continue
 
